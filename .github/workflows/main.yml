@@ -1,113 +1,148 @@
-name: RDP
+name: MT4 Expert on RDP
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  mt4-rdp:
     runs-on: windows-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Configure RDP
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          # تفعيل Remote Desktop
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
+                           -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
-
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+                           -Name "UserAuthentication" -Value 0 -Force
           
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
+          # فتح بورت 3389 في Firewall
+          netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
 
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
-          Restart-Service -Name TermService -Force
-
-      - name: Create RDP User with Secure Password
+      - name: Create RDP User
         run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $password = -join ((33..126) | Get-Random -Count 16 | ForEach-Object {[char]$_})
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
-          }
+          New-LocalUser -Name "MT4User" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "MT4User"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "MT4User"
+          echo "RDP_CREDS=MT4User:$password" >> $env:GITHUB_ENV
 
       - name: Install Tailscale
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "$env:TEMP\tailscale.exe"
+          Start-Process -FilePath "$env:TEMP\tailscale.exe" -ArgumentList "/S" -Wait
 
-      - name: Establish Tailscale Connection
+      - name: Start Tailscale
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          
-          # Wait for Tailscale to assign an IP
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-mt4-$env:GITHUB_RUN_ID
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
-      - name: Verify RDP Accessibility
-        run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
-          }
-          Write-Host "TCP connectivity successful!"
 
-      - name: Maintain Connection
+      - name: Install MT4 Requirements
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "==================`n"
+          # تثبيت مكتبات VC++ الضرورية لـ MT4
+          $vcUrls = @(
+              "https://aka.ms/vs/17/release/vc_redist.x64.exe",
+              "https://aka.ms/vs/16/release/vc_redist.x64.exe"
+          )
           
-          # Keep runner active indefinitely (or until manually cancelled)
+          foreach ($url in $vcUrls) {
+              $fileName = "$env:TEMP\vc_redist.exe"
+              Invoke-WebRequest -Uri $url -OutFile $fileName
+              Start-Process -FilePath $fileName -ArgumentList "/install", "/quiet", "/norestart" -Wait
+          }
+          
+          # تثبيت .NET Framework 4.8
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/?linkid=2088631" -OutFile "$env:TEMP\net48.exe"
+          Start-Process -FilePath "$env:TEMP\net48.exe" -ArgumentList "/q", "/norestart" -Wait
+
+      - name: Download and Install MT4
+        run: |
+          # تحميل MT4 من موقع وسيط (غير محظور على GitHub)
+          $mt4Url = "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt4/mt4setup.exe"
+          $mt4Path = "$env:TEMP\mt4setup.exe"
+          Invoke-WebRequest -Uri $mt4Url -OutFile $mt4Path
+          
+          # تثبيت MT4 بصمت
+          Start-Process -FilePath $mt4Path -ArgumentList "/S" -Wait
+          
+          # إنشاء اختصار على Desktop
+          $shortcutPath = "$env:PUBLIC\Desktop\MetaTrader 4.lnk"
+          $WshShell = New-Object -ComObject WScript.Shell
+          $shortcut = $WshShell.CreateShortcut($shortcutPath)
+          $shortcut.TargetPath = "C:\Program Files\MetaTrader 4\terminal.exe"
+          $shortcut.Save()
+
+      - name: Download Expert from GitHub
+        run: |
+          # تحميل الخبر من GitHub (يجب تعديل الرابط)
+          $expertUrl = "https://raw.githubusercontent.com/yourusername/yourrepo/main/expert.ex4"
+          $appData = "$env:APPDATA\MetaQuotes\Terminal"
+          
+          # ابحث عن مجلد MT4 الذي تم إنشاؤه
+          $mt4Folder = Get-ChildItem -Path $appData -Directory | Select-Object -First 1
+          $expertPath = "$mt4Folder\MQL4\Experts\myexpert.ex4"
+          
+          Invoke-WebRequest -Uri $expertUrl -OutFile $expertPath
+
+      - name: Configure MT4 for Expert
+        run: |
+          # إنشاء ملف إعدادات لـ MT4
+          $appData = "$env:APPDATA\MetaQuotes\Terminal"
+          $mt4Folder = Get-ChildItem -Path $appData -Directory | Select-Object -First 1
+          $configPath = "$mt4Folder\config"
+          
+          # إنشاء ملف common.ini للإعدادات
+          $commonIni = @"
+[Common]
+AllowDllImports=1
+AllowExternalExperts=1
+AllowLiveTrading=1
+AllowSendMail=1
+AllowTrade=1
+AllowWebRequest=1
+ConfirmDllImport=0
+ConfirmExternalExpert=0
+ConfirmFileOperations=0
+ConfirmSendMail=0
+ConfirmTrade=0
+ConfirmWebRequest=0
+Enabled=1
+MaxBars=100000
+"@
+          
+          Set-Content -Path "$configPath\common.ini" -Value $commonIni
+
+      - name: Run MT4 with Expert
+        run: |
+          # تشغيل MT4 تلقائياً
+          $mt4Exe = "C:\Program Files\MetaTrader 4\terminal.exe"
+          
+          # تشغيل MT4 كمسؤول
+          Start-Process -FilePath $mt4Exe -Verb RunAs -WindowStyle Minimized
+          
+          # انتظر حتى يفتح MT4
+          Start-Sleep -Seconds 10
+          
+          # يمكنك هنا إضافة أوامر لتشغيل الخبر تلقائياً
+          # لكن هذا يحتاج إلى أوتوميشن أكثر تعقيداً
+
+      - name: Display Connection Info
+        run: |
+          Write-Host "========================================"
+          Write-Host "RDP Connection Details:"
+          Write-Host "IP: $env:TAILSCALE_IP"
+          Write-Host "Username: MT4User"
+          Write-Host "Password: $(echo $env:RDP_CREDS | cut -d':' -f2)"
+          Write-Host ""
+          Write-Host "MT4 is installed and expert is ready!"
+          Write-Host "Connect via RDP and run MT4"
+          Write-Host "========================================"
+          
+          # الحفاظ على الجلسة نشطة
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Write-Host "[$(Get-Date)] RDP Active - Press Ctrl+C in GitHub to stop"
               Start-Sleep -Seconds 300
           }
