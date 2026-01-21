@@ -1,4 +1,4 @@
-name: RDP (Tailscale) + Restore OneRoyal MT4 from Release
+name: RDP (Tailscale) + Download Release ZIP
 
 on:
   workflow_dispatch:
@@ -9,38 +9,46 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Configure Core RDP Settings (safer)
+      - name: Configure Core RDP Settings
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          Set-StrictMode -Version Latest
 
-          # Enable Remote Desktop
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
             -Name "fDenyTSConnections" -Value 0 -Force
 
-          # Firewall: allow RDP only from Tailscale range
           netsh advfirewall firewall delete rule name="RDP-Tailscale" | Out-Null
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389 remoteip=100.64.0.0/10 | Out-Null
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389 | Out-Null
 
           Restart-Service -Name TermService -Force
 
-      - name: Create/Update RDP user (fixed password from secret)
+      - name: Create RDP User (random password each run)
         shell: pwsh
-        env:
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
-          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) { throw "Missing secret: RDP_PASSWORD" }
-          Write-Host "::add-mask::$env:RDP_PASSWORD"
+
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+            Upper   = [char[]](65..90)
+            Lower   = [char[]](97..122)
+            Number  = [char[]](48..57)
+            Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
+          }
+
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper   | Get-Random -Count 4
+          $rawPassword += $charSet.Lower   | Get-Random -Count 4
+          $rawPassword += $charSet.Number  | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
           $user = "RDP"
-          $securePass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
-
           $existing = Get-LocalUser -Name $user -ErrorAction SilentlyContinue
           if (-not $existing) {
-            New-LocalUser -Name $user -Password $securePass -AccountNeverExpires -PasswordNeverExpires | Out-Null
+            New-LocalUser -Name $user -Password $securePass -AccountNeverExpires | Out-Null
           } else {
             Set-LocalUser -Name $user -Password $securePass
           }
@@ -48,10 +56,13 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction SilentlyContinue
 
+          "RDP_USER=$user" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "RDP_PASS=$password" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
           New-Item -ItemType Directory -Force -Path "C:\Users\RDP\Desktop" | Out-Null
           New-Item -ItemType Directory -Force -Path "C:\Users\Public\Desktop" | Out-Null
 
-      - name: Download OneRoyal MT4 ZIP from latest Release + unzip to Desktop
+      - name: Download OneRoyal ZIP from latest Release + unzip to Desktop
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -82,18 +93,13 @@ jobs:
           $zipPath1 = Join-Path $rdpDesktop $assetName
           $zipPath2 = Join-Path $publicDesktop $assetName
 
-          # Download once, then copy to Public Desktop
           Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath1 -Headers $headers
           Copy-Item -Force $zipPath1 $zipPath2
 
-          # Extract to folder on RDP desktop
           $extractDir = Join-Path $rdpDesktop "Restored_OneRoyal_MT4"
           if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
           New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-
           Expand-Archive -Path $zipPath1 -DestinationPath $extractDir -Force
-
-          "OneRoyal MT4 restored to: $extractDir" | Out-File (Join-Path $rdpDesktop "README_RESTORED.txt") -Encoding utf8 -Force
 
       - name: Install Tailscale
         shell: pwsh
@@ -111,8 +117,6 @@ jobs:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           $ErrorActionPreference = "Stop"
-          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) { throw "Missing secret: TAILSCALE_AUTH_KEY" }
-
           $tsExe = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
           & $tsExe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=gh-rdp-$env:GITHUB_RUN_ID | Out-Null
 
@@ -130,16 +134,16 @@ jobs:
         shell: pwsh
         run: |
           Write-Host ""
-          Write-Host "=== RDP ACCESS (via Tailscale) ==="
+          Write-Host "=== RDP ACCESS ==="
           Write-Host "Address : $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: (stored in secret RDP_PASSWORD)"
-          Write-Host "MT4 ZIP  : C:\Users\RDP\Desktop\OneRoyal.MT4.Terminal.zip"
+          Write-Host "Username: $env:RDP_USER"
+          Write-Host "Password: $env:RDP_PASS"
+          Write-Host "ZIP     : C:\Users\RDP\Desktop\OneRoyal.MT4.Terminal.zip"
           Write-Host "Extract : C:\Users\RDP\Desktop\Restored_OneRoyal_MT4"
-          Write-Host "================================="
+          Write-Host "=================="
           Write-Host ""
 
-      - name: Maintain Connection (max ~6h on GitHub-hosted)
+      - name: Maintain Connection
         shell: pwsh
         run: |
           $end = (Get-Date).AddMinutes(345)
