@@ -1,4 +1,4 @@
-name: RDP + MT5 FINAL FIX
+name: RDP + MT5 REAL FIX
 
 on:
   workflow_dispatch:
@@ -25,19 +25,26 @@ jobs:
           echo "RDP_USER=RDP" >> $env:GITHUB_ENV
           echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
 
-      - name: Download MT5 Portable
+      - name: Download MT5 Official
         shell: pwsh
         run: |
-          $url = "https://github.com/EA31337/EA31337/releases/download/v1.14.0/MetaTrader5.zip"
-          $zip = "C:\Users\RDP\Desktop\mt5.zip"
+          $url = "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
+          $file = "C:\Users\RDP\Desktop\mt5.exe"
 
-          Invoke-WebRequest -Uri $url -OutFile $zip
-          Expand-Archive $zip -DestinationPath "C:\Users\RDP\Desktop\MT5" -Force
+          Invoke-WebRequest -Uri $url -OutFile $file
+
+      - name: Extract MT5 (Portable Trick)
+        shell: pwsh
+        run: |
+          $file = "C:\Users\RDP\Desktop\mt5.exe"
+          $dest = "C:\Users\RDP\Desktop\MT5"
+
+          Start-Process -FilePath $file -ArgumentList "/portable" -Wait
 
       - name: Run MT5 + Login
         shell: pwsh
         run: |
-          $terminal = Get-ChildItem "C:\Users\RDP\Desktop\MT5" -Recurse -Filter "terminal64.exe" | Select-Object -First 1
+          $terminal = Get-ChildItem "C:\Users\RDP" -Recurse -Filter "terminal64.exe" | Select-Object -First 1
 
           if (!$terminal) {
             Write-Host "MT5 NOT FOUND ❌"
