@@ -1,70 +1,141 @@
-name: RDP + MT5 FINAL WORKING
+name: RDP Windows + MT5 Auto Login
 
 on:
   workflow_dispatch:
 
 jobs:
-  rdp:
+  secure-rdp:
     runs-on: windows-latest
     timeout-minutes: 350
 
     steps:
-      - name: Enable RDP
+      - name: Prepare Directories and Environment
         shell: pwsh
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-
-      - name: Create User
-        shell: pwsh
-        run: |
-          $pass = "P@ssw0rd123!"
-          net user RDP $pass /add
-          net localgroup administrators RDP /add
-          net localgroup "Remote Desktop Users" RDP /add
-          echo "RDP_USER=RDP" >> $env:GITHUB_ENV
-          echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
-
-          # إنشاء Desktop يدوي
-          New-Item -ItemType Directory -Force -Path "C:\Users\RDP\Desktop" | Out-Null
-
-      - name: Download MT5 Official
-        shell: pwsh
-        run: |
-          $url = "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
-          $file = "C:\Users\RDP\Desktop\mt5.exe"
-
-          Invoke-WebRequest -Uri $url -OutFile $file
-
-      - name: Run MT5 Portable
-        shell: pwsh
-        run: |
-          $file = "C:\Users\RDP\Desktop\mt5.exe"
-
-          Start-Process -FilePath $file -ArgumentList "/portable" -Wait
-
-      - name: Run MT5 + Login
-        shell: pwsh
-        run: |
-          $terminal = Get-ChildItem "C:\Users\RDP" -Recurse -Filter "terminal64.exe" | Select-Object -First 1
-
-          if (!$terminal) {
-            Write-Host "MT5 NOT FOUND ❌"
-            exit 1
+          $paths = @("C:\MT5", "C:\Users\RDP\Desktop", "C:\Users\Public\Desktop")
+          foreach ($path in $paths) {
+              if (-not (Test-Path $path)) {
+                  New-Item -ItemType Directory -Force -Path $path | Out-Null
+                  Write-Host "Created: $path"
+              }
           }
 
-          $configPath = "$env:TEMP\config.ini"
+      - name: Configure Core RDP Settings
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+          netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
 
-          Add-Content $configPath "[Common]"
-          Add-Content $configPath "Login=1069352"
-          Add-Content $configPath "Password=#wU3Q!Xp"
-          Add-Content $configPath "Server=VTMarkets-Demo"
+      - name: Create RDP User
+        shell: pwsh
+        run: |
+          $user = "RDP"
+          $pass = "Admin@MT5#2026" # كلمة سر ثابتة وقوية لتجنب مشاكل المتغيرات
+          $securePass = ConvertTo-SecureString $pass -AsPlainText -Force
+          $existing = Get-LocalUser -Name $user -ErrorAction SilentlyContinue
+          if (-not $existing) {
+              New-LocalUser -Name $user -Password $securePass -AccountNeverExpires | Out-Null
+          }
+          Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction SilentlyContinue
+          echo "RDP_USER=$user" >> $env:GITHUB_ENV
+          echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
 
-          Start-Process -FilePath $terminal.FullName -ArgumentList "/portable /config:$configPath"
+      - name: Download and Setup MT5 Portable
+        shell: pwsh
+        run: |
+          $mt5Url = "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
+          $dest = "C:\MT5\mt5setup.exe"
+          
+          Write-Host "Downloading MT5..."
+          try {
+              Invoke-WebRequest -Uri $mt5Url -OutFile $dest -TimeoutSec 60
+          } catch {
+              Write-Host "Primary link failed, trying fallback..."
+              Invoke-WebRequest -Uri "https://www.metatrader5.com/download" -OutFile $dest
+          }
 
-          Write-Host "MT5 RUNNING ✅"
+          if (Test-Path $dest) {
+              Write-Host "Extracting MT5 files (Portable Mode)..."
+              Start-Process -FilePath $dest -ArgumentList "/extract:C:\MT5 /quiet" -Wait
+              Write-Host "Extraction complete."
+          } else {
+              throw "Failed to download MT5"
+          }
+
+      - name: Configure Auto-Login (Common.ini)
+        shell: pwsh
+        run: |
+          $configDir = "C:\MT5\config"
+          if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir }
+          
+          # إنشاء ملف الإعدادات لتسجيل الدخول التلقائي
+          $iniContent = @"
+          [Common]
+          Login=1069352
+          ProxyEnable=0
+          CertConfirm=0
+          KeepPrivate=1
+          NewsEnable=0
+          "@
+          $iniContent | Out-File -FilePath "$configDir\common.ini" -Encoding ascii
+          
+          # ملاحظة: كلمة السر والسيرفر يتم تمريرهم كـ Arguments عند التشغيل لضمان الفعالية
+          Write-Host "Login configuration created."
+
+      - name: Install Tailscale
+        shell: pwsh
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $installer = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installer
+          Start-Process msiexec.exe -ArgumentList "/i", "$installer", "/quiet", "/norestart" -Wait
+          $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
+          if (-not (Test-Path $tsExe)) { throw "Tailscale failed to install" }
+
+      - name: Connect Tailscale and Launch MT5
+        shell: pwsh
+        env:
+          TS_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
+          & $tsExe up --authkey=$env:TS_KEY --hostname=GH-MT5-RDP --accept-routes
+          
+          $tsIP = ""
+          while (-not $tsIP) {
+              $tsIP = (& $tsExe ip -4)
+              Start-Sleep -Seconds 2
+          }
+          echo "TS_IP=$tsIP" >> $env:GITHUB_ENV
+
+          Write-Host "Launching MT5 in Portable Mode..."
+          $mt5Path = "C:\MT5\terminal64.exe"
+          if (Test-Path $mt5Path) {
+              # تشغيل MT5 مع بيانات الحساب مباشرة
+              Start-Process -FilePath $mt5Path -ArgumentList "/portable /login:1069352 /password:'#wU3Q!Xp' /server:VTMarkets-Demo"
+              Write-Host "MT5 is running."
+          } else {
+              throw "terminal64.exe not found!"
+          }
+
+      - name: RDP Access Details
+        shell: pwsh
+        run: |
+          Write-Host "==============================="
+          Write-Host "IP: $env:TS_IP"
+          Write-Host "User: $env:RDP_USER"
+          Write-Host "Pass: $env:RDP_PASS"
+          Write-Host "MT5 Directory: C:\MT5"
+          Write-Host "==============================="
 
       - name: Keep Alive
         shell: pwsh
         run: |
-          Start-Sleep -Seconds 20000
+          $startTime = Get-Date
+          while ($startTime.AddMinutes(345) -gt (Get-Date)) {
+              Write-Host "Heartbeat: $(Get-Date) - RDP & MT5 Active"
+              Start-Sleep -Seconds 60
+          }
