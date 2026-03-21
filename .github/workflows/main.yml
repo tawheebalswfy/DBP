@@ -1,4 +1,4 @@
-name: RDP + MT5 Final Setup
+name: RDP + MT5 Launcher Auto-Login
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ jobs:
         shell: pwsh
         run: New-Item -ItemType Directory -Force -Path "C:\MT5"
 
-      - name: 2. Download MT5 ZIP
+      - name: 2. Download and Extract MT5 ZIP
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -23,15 +23,33 @@ jobs:
           $api = "https://api.github.com/repos/$owner/$repo/releases/latest"
           $headers = @{ Authorization = "Bearer $env:GH_TOKEN" }
           $rel = Invoke-RestMethod -Uri $api -Headers $headers
-          
-          # الكود سيبحث عن ملفك MetaTrader.5.zip
           $asset = $rel.assets | Where-Object { $_.name -like "*MetaTrader.5.zip*" } | Select-Object -First 1
-          if (-not $asset) { throw "File MetaTrader.5.zip not found in Release!" }
-
+          
           Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "C:\MT5\mt5.zip" -Headers $headers
           Expand-Archive -Path "C:\MT5\mt5.zip" -DestinationPath "C:\MT5" -Force
 
-      - name: 3. Configure RDP & User
+      - name: 3. Create Login Config (vm.ini)
+        shell: pwsh
+        run: |
+          # إنشاء ملف الإعدادات داخل مجلد البرنامج الرئيسي
+          $configContent = @"
+          [Common]
+          Login=1069352
+          Password=#wU3Q!Xp
+          Server=VTMarkets-Demo
+          EnableNews=0
+          ProxyEnable=0
+          "@
+          # سنقوم بوضع الملف في المجلد الرئيسي وفي مجلد config للاحتياط
+          $basePath = Get-ChildItem -Path "C:\MT5" -Filter "launcher.exe" -Recurse | Select-Object -ExpandProperty DirectoryName -First 1
+          $configPath = Join-Path $basePath "config"
+          if (-not (Test-Path $configPath)) { New-Item -ItemType Directory -Path $configPath }
+          
+          $configContent | Out-File -FilePath (Join-Path $basePath "vm.ini") -Encoding ascii
+          $configContent | Out-File -FilePath (Join-Path $configPath "common.ini") -Encoding ascii
+          Write-Host "Config files created in $basePath"
+
+      - name: 4. Configure RDP User
         shell: pwsh
         run: |
           $pass = "Admin@MT5#2026"
@@ -41,21 +59,28 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
 
-      - name: 4. Launch MT5 with Auto Login
+      - name: 5. Start MT5 via Launcher
         shell: pwsh
         run: |
-          # البحث عن terminal64.exe
-          $exe = Get-ChildItem -Path "C:\MT5" -Filter "terminal64.exe" -Recurse | Select-Object -First 1
-          if ($exe) {
-              # التشغيل المباشر بالبيانات المطلوبة
-              Start-Process -FilePath $exe.FullName -ArgumentList "/portable /login:1069352 /password:'#wU3Q!Xp' /server:VTMarkets-Demo"
-              Write-Host "MT5 Started Successfully"
+          # البحث عن launcher.exe وتشغيله
+          $launcher = Get-ChildItem -Path "C:\MT5" -Filter "launcher.exe" -Recurse | Select-Object -First 1
+          if ($launcher) {
+              Write-Host "Launching MT5 via: $($launcher.FullName)"
+              # تشغيل الـ Launcher مع تمرير ملف الإعدادات للتيرمينال
+              Start-Process -FilePath $launcher.FullName -WorkingDirectory $launcher.DirectoryName
+              
+              # انتظار بسيط ثم محاولة تشغيل التيرمينال بملف الإعدادات إذا لم يقم اللاونشر بذلك
+              Start-Sleep -Seconds 10
+              $terminal = Get-ChildItem -Path "C:\MT5" -Filter "terminal64.exe" -Recurse | Select-Object -First 1
+              if ($terminal) {
+                  Start-Process -FilePath $terminal.FullName -ArgumentList "/portable /config:vm.ini" -WorkingDirectory $terminal.DirectoryName
+              }
           } else {
-              Write-Error "terminal64.exe not found!"
+              Write-Error "launcher.exe not found!"
               exit 1
           }
 
-      - name: 5. Connect Tailscale
+      - name: 6. Connect Tailscale
         shell: pwsh
         env:
           TS_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
@@ -66,7 +91,7 @@ jobs:
           $ip = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4)
           Write-Host "RDP IP: $ip"
 
-      - name: 6. Keep Alive
+      - name: 7. Keep Alive
         shell: pwsh
         run: |
           $limit = (Get-Date).AddMinutes(345)
