@@ -1,4 +1,4 @@
-name: RDP + MT5 PORTABLE
+name: RDP + MT5 WORKING
 
 on:
   workflow_dispatch:
@@ -25,22 +25,21 @@ jobs:
           echo "RDP_USER=RDP" >> $env:GITHUB_ENV
           echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
 
-      - name: Download MT5 Portable
+      - name: Download MT5 (REAL WORKING)
         shell: pwsh
         run: |
-          $zipUrl = "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5portable.zip"
-          $zipPath = "C:\Users\RDP\Desktop\mt5.zip"
+          $url = "https://github.com/EA31337/EA31337/releases/download/v1.14.0/MetaTrader5.zip"
+          $zip = "C:\Users\RDP\Desktop\mt5.zip"
 
-          Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
-
-          Expand-Archive $zipPath -DestinationPath "C:\Users\RDP\Desktop\MT5" -Force
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive $zip -DestinationPath "C:\Users\RDP\Desktop\MT5" -Force
 
       - name: Run MT5 + Login
         shell: pwsh
         run: |
-          $terminal = "C:\Users\RDP\Desktop\MT5\terminal64.exe"
+          $terminal = Get-ChildItem "C:\Users\RDP\Desktop\MT5" -Recurse -Filter "terminal64.exe" | Select-Object -First 1
 
-          if (!(Test-Path $terminal)) {
+          if (!$terminal) {
             Write-Host "MT5 NOT FOUND ❌"
             exit 1
           }
@@ -53,11 +52,11 @@ Server=VTMarkets-Demo
 "@
 
           $configPath = "$env:TEMP\config.ini"
-          $config | Out-File -FilePath $configPath -Encoding ASCII
+          $config | Out-File $configPath -Encoding ASCII
 
-          Start-Process -FilePath $terminal -ArgumentList "/portable /config:$configPath"
+          Start-Process -FilePath $terminal.FullName -ArgumentList "/portable /config:$configPath"
 
-          Write-Host "MT5 PORTABLE RUNNING ✅"
+          Write-Host "MT5 RUNNING ✅"
 
       - name: Install Tailscale
         shell: pwsh
