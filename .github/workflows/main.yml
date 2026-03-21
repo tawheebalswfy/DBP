@@ -51,37 +51,33 @@ jobs:
               Expand-Archive -Path "$env:TEMP\MT5.zip" -DestinationPath "$desktop\MT5_Platform" -Force
           }
 
-      - name: 4. Inject Login Configs
+      - name: 4. Inject Login Configs (Enhanced)
         shell: pwsh
         run: |
           $desktop = [System.Environment]::GetFolderPath("Desktop")
 
-          # MT5: vm.ini
+          # ----- MT5: vm.ini in launcher folder -----
           $mt5Launcher = Get-ChildItem -Path "$desktop\MT5_Platform" -Filter "launcher.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($mt5Launcher) {
               $mt5Dir = $mt5Launcher.DirectoryName
               $vmIniPath = Join-Path $mt5Dir "vm.ini"
-              $vmIniContent = "[Common]`nLogin=1069352`nPassword=#wU3Q!Xp`nServer=VTMarkets-Demo"
-              $vmIniContent | Out-File -FilePath $vmIniPath -Encoding ascii -Force
+              $vmContent = "[Common]`r`nLogin=1069352`r`nPassword=#wU3Q!Xp`r`nServer=VTMarkets-Demo`r`n"
+              $vmContent | Out-File -FilePath $vmIniPath -Encoding ascii -Force
               Write-Host "MT5 vm.ini created at $vmIniPath"
           } else {
-              Write-Host "MT5 launcher.exe not found in MT5_Platform" -ForegroundColor Red
+              Write-Host "MT5 launcher.exe not found" -ForegroundColor Red
           }
 
-          # MT4: common.ini
+          # ----- MT4: terminal.ini in terminal folder -----
           $mt4Terminal = Get-ChildItem -Path "$desktop\MT4_Platform" -Filter "terminal.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($mt4Terminal) {
               $mt4Dir = $mt4Terminal.DirectoryName
-              $cfgDir = Join-Path $mt4Dir "config"
-              if (-not (Test-Path $cfgDir)) {
-                  New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null
-              }
-              $commonIniPath = Join-Path $cfgDir "common.ini"
-              $commonIniContent = "[Common]`nLogin=31335811`nPassword=dcym47`nServer=ICMarketsSC-Demo03"
-              $commonIniContent | Out-File -FilePath $commonIniPath -Encoding ascii -Force
-              Write-Host "MT4 common.ini created at $commonIniPath"
+              $terminalIniPath = Join-Path $mt4Dir "terminal.ini"
+              $iniContent = "[Common]`r`nLogin=31335811`r`nPassword=dcym47`r`nServer=ICMarketsSC-Demo03`r`n"
+              $iniContent | Out-File -FilePath $terminalIniPath -Encoding ascii -Force
+              Write-Host "MT4 terminal.ini created at $terminalIniPath"
           } else {
-              Write-Host "MT4 terminal.exe not found in MT4_Platform" -ForegroundColor Red
+              Write-Host "MT4 terminal.exe not found" -ForegroundColor Red
           }
 
       - name: 5. Connect Tailscale
@@ -95,17 +91,22 @@ jobs:
           $tsIP = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4) | Select-Object -First 1
           "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: 6. Launch Platforms (Launcher & Terminal)
+      - name: 6. Launch Platforms (with proper arguments)
         shell: pwsh
         run: |
           $desktop = [System.Environment]::GetFolderPath("Desktop")
 
+          # Kill any existing MT processes to avoid conflicts
+          Get-Process -Name "terminal", "launcher", "metatrader" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+          # Launch MT5 via launcher.exe with explicit config
           $mt5 = Get-ChildItem -Path "$desktop\MT5_Platform" -Filter "launcher.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($mt5) {
               Write-Host "Starting MT5 from: $($mt5.FullName)"
-              Start-Process -FilePath $mt5.FullName -WorkingDirectory $mt5.DirectoryName
+              Start-Process -FilePath $mt5.FullName -ArgumentList '/config:"vm.ini"' -WorkingDirectory $mt5.DirectoryName
           }
 
+          # Launch MT4 via terminal.exe with /portable flag
           $mt4 = Get-ChildItem -Path "$desktop\MT4_Platform" -Filter "terminal.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($mt4) {
               Write-Host "Starting MT4 from: $($mt4.FullName)"
