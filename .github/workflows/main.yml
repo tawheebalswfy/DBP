@@ -1,4 +1,4 @@
-name: RDP + MT5 WORKING
+name: RDP + MT5 FINAL FIX
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
           echo "RDP_USER=RDP" >> $env:GITHUB_ENV
           echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
 
-      - name: Download MT5 (REAL WORKING)
+      - name: Download MT5 Portable
         shell: pwsh
         run: |
           $url = "https://github.com/EA31337/EA31337/releases/download/v1.14.0/MetaTrader5.zip"
@@ -44,15 +44,12 @@ jobs:
             exit 1
           }
 
-          $config = @"
-[Common]
-Login=1069352
-Password=#wU3Q!Xp
-Server=VTMarkets-Demo
-"@
-
           $configPath = "$env:TEMP\config.ini"
-          $config | Out-File $configPath -Encoding ASCII
+
+          Add-Content $configPath "[Common]"
+          Add-Content $configPath "Login=1069352"
+          Add-Content $configPath "Password=#wU3Q!Xp"
+          Add-Content $configPath "Server=VTMarkets-Demo"
 
           Start-Process -FilePath $terminal.FullName -ArgumentList "/portable /config:$configPath"
 
