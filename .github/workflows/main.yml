@@ -36,11 +36,9 @@ jobs:
           $allReleases = Invoke-RestMethod -Uri "https://api.github.com/repos/${{ github.repository }}/releases" -Headers $headers
           $allAssets = $allReleases.assets
 
-          # Dynamic desktop path
           $desktop = [System.Environment]::GetFolderPath("Desktop")
           Write-Host "Target Desktop Path: $desktop"
 
-          # MT4 & MT5 assets
           $assetMT4 = $allAssets | Where-Object { $_.name -like "*OneRoyal.MT4.Terminal.zip*" } | Select-Object -First 1
           $assetMT5 = $allAssets | Where-Object { $_.name -like "*MetaTrader.5.zip*" } | Select-Object -First 1
 
@@ -58,23 +56,19 @@ jobs:
         run: |
           $desktop = [System.Environment]::GetFolderPath("Desktop")
 
-          # ----- MT5: vm.ini in launcher's directory -----
+          # MT5: vm.ini
           $mt5Launcher = Get-ChildItem -Path "$desktop\MT5_Platform" -Filter "launcher.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($mt5Launcher) {
               $mt5Dir = $mt5Launcher.DirectoryName
               $vmIniPath = Join-Path $mt5Dir "vm.ini"
-              @"
-[Common]
-Login=1069352
-Password=#wU3Q!Xp
-Server=VTMarkets-Demo
-"@ | Out-File -FilePath $vmIniPath -Encoding ascii -Force
+              $vmIniContent = "[Common]`nLogin=1069352`nPassword=#wU3Q!Xp`nServer=VTMarkets-Demo"
+              $vmIniContent | Out-File -FilePath $vmIniPath -Encoding ascii -Force
               Write-Host "MT5 vm.ini created at $vmIniPath"
           } else {
               Write-Host "MT5 launcher.exe not found in MT5_Platform" -ForegroundColor Red
           }
 
-          # ----- MT4: common.ini in config folder (with /portable) -----
+          # MT4: common.ini
           $mt4Terminal = Get-ChildItem -Path "$desktop\MT4_Platform" -Filter "terminal.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($mt4Terminal) {
               $mt4Dir = $mt4Terminal.DirectoryName
@@ -83,12 +77,8 @@ Server=VTMarkets-Demo
                   New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null
               }
               $commonIniPath = Join-Path $cfgDir "common.ini"
-              @"
-[Common]
-Login=31335811
-Password=dcym47
-Server=ICMarketsSC-Demo03
-"@ | Out-File -FilePath $commonIniPath -Encoding ascii -Force
+              $commonIniContent = "[Common]`nLogin=31335811`nPassword=dcym47`nServer=ICMarketsSC-Demo03"
+              $commonIniContent | Out-File -FilePath $commonIniPath -Encoding ascii -Force
               Write-Host "MT4 common.ini created at $commonIniPath"
           } else {
               Write-Host "MT4 terminal.exe not found in MT4_Platform" -ForegroundColor Red
@@ -110,14 +100,12 @@ Server=ICMarketsSC-Demo03
         run: |
           $desktop = [System.Environment]::GetFolderPath("Desktop")
 
-          # Launch MT5 via launcher.exe
           $mt5 = Get-ChildItem -Path "$desktop\MT5_Platform" -Filter "launcher.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($mt5) {
               Write-Host "Starting MT5 from: $($mt5.FullName)"
               Start-Process -FilePath $mt5.FullName -WorkingDirectory $mt5.DirectoryName
           }
 
-          # Launch MT4 via terminal.exe with /portable flag
           $mt4 = Get-ChildItem -Path "$desktop\MT4_Platform" -Filter "terminal.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($mt4) {
               Write-Host "Starting MT4 from: $($mt4.FullName)"
