@@ -1,153 +1,91 @@
-name: RDP (Tailscale) + Download Release ZIP
+name: RDP + MT5 PORTABLE
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  rdp:
     runs-on: windows-latest
     timeout-minutes: 350
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Enable RDP
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name "fDenyTSConnections" -Value 0 -Force
-
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" | Out-Null
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389 | Out-Null
-
-          Restart-Service -Name TermService -Force
-
-      - name: Create RDP User (random password each run)
+      - name: Create User
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
+          $pass = "P@ssw0rd123!"
+          net user RDP $pass /add
+          net localgroup administrators RDP /add
+          net localgroup "Remote Desktop Users" RDP /add
+          echo "RDP_USER=RDP" >> $env:GITHUB_ENV
+          echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
 
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-            Upper   = [char[]](65..90)
-            Lower   = [char[]](97..122)
-            Number  = [char[]](48..57)
-            Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
-          }
-
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper   | Get-Random -Count 4
-          $rawPassword += $charSet.Lower   | Get-Random -Count 4
-          $rawPassword += $charSet.Number  | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-
-          $user = "RDP"
-          $existing = Get-LocalUser -Name $user -ErrorAction SilentlyContinue
-          if (-not $existing) {
-            New-LocalUser -Name $user -Password $securePass -AccountNeverExpires | Out-Null
-          } else {
-            Set-LocalUser -Name $user -Password $securePass
-          }
-
-          Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction SilentlyContinue
-
-          "RDP_USER=$user" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "RDP_PASS=$password" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-          New-Item -ItemType Directory -Force -Path "C:\Users\RDP\Desktop" | Out-Null
-          New-Item -ItemType Directory -Force -Path "C:\Users\Public\Desktop" | Out-Null
-
-      - name: Download OneRoyal ZIP from latest Release + unzip to Desktop
+      - name: Download MT5 Portable
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          $ErrorActionPreference = "Stop"
+          $zipUrl = "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5portable.zip"
+          $zipPath = "C:\Users\RDP\Desktop\mt5.zip"
 
-          $owner = "${{ github.repository_owner }}"
-          $repo  = "${{ github.event.repository.name }}"
-          $assetName = "OneRoyal.MT4.Terminal.zip"
+          Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
 
-          $api = "https://api.github.com/repos/$owner/$repo/releases/latest"
-          $headers = @{
-            Authorization = "Bearer $env:GH_TOKEN"
-            "User-Agent"  = "gh-actions"
-            Accept        = "application/vnd.github+json"
+          Expand-Archive $zipPath -DestinationPath "C:\Users\RDP\Desktop\MT5" -Force
+
+      - name: Run MT5 + Login
+        shell: pwsh
+        run: |
+          $terminal = "C:\Users\RDP\Desktop\MT5\terminal64.exe"
+
+          if (!(Test-Path $terminal)) {
+            Write-Host "MT5 NOT FOUND ❌"
+            exit 1
           }
 
-          $rel = Invoke-RestMethod -Uri $api -Headers $headers
-          $asset = $rel.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
-          if (-not $asset) {
-            $names = ($rel.assets | ForEach-Object { $_.name }) -join ", "
-            throw "Asset not found. Expected: $assetName. Found: $names"
-          }
+          $config = @"
+[Common]
+Login=1069352
+Password=#wU3Q!Xp
+Server=VTMarkets-Demo
+"@
 
-          $rdpDesktop    = "C:\Users\RDP\Desktop"
-          $publicDesktop = "C:\Users\Public\Desktop"
+          $configPath = "$env:TEMP\config.ini"
+          $config | Out-File -FilePath $configPath -Encoding ASCII
 
-          $zipPath1 = Join-Path $rdpDesktop $assetName
-          $zipPath2 = Join-Path $publicDesktop $assetName
+          Start-Process -FilePath $terminal -ArgumentList "/portable /config:$configPath"
 
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath1 -Headers $headers
-          Copy-Item -Force $zipPath1 $zipPath2
-
-          $extractDir = Join-Path $rdpDesktop "Restored_OneRoyal_MT4"
-          if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
-          New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-          Expand-Archive -Path $zipPath1 -DestinationPath $extractDir -Force
+          Write-Host "MT5 PORTABLE RUNNING ✅"
 
       - name: Install Tailscale
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-          $installerPath = Join-Path $env:TEMP "tailscale.msi"
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $file = "$env:TEMP\ts.msi"
+          Invoke-WebRequest -Uri $url -OutFile $file
+          Start-Process msiexec.exe -ArgumentList "/i `"$file`" /quiet" -Wait
 
-      - name: Establish Tailscale Connection
+      - name: Connect Tailscale
         shell: pwsh
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          $ErrorActionPreference = "Stop"
-          $tsExe = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
-          & $tsExe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=gh-rdp-$env:GITHUB_RUN_ID | Out-Null
+          $exe = "C:\Program Files\Tailscale\tailscale.exe"
+          & $exe up --authkey=$env:TAILSCALE_AUTH_KEY
 
-          $tsIP = $null
-          for ($i=0; $i -lt 20; $i++) {
-            $tsIP = (& $tsExe ip -4) | Select-Object -First 1
-            if ($tsIP) { break }
-            Start-Sleep -Seconds 3
-          }
-          if (-not $tsIP) { throw "Tailscale IP not assigned" }
+          $ip = (& $exe ip -4 | Select-Object -First 1)
+          echo "IP=$ip" >> $env:GITHUB_ENV
 
-          "TAILSCALE_IP=$tsIP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      - name: Show RDP access info
+      - name: Show Info
         shell: pwsh
         run: |
-          Write-Host ""
-          Write-Host "=== RDP ACCESS ==="
-          Write-Host "Address : $env:TAILSCALE_IP"
-          Write-Host "Username: $env:RDP_USER"
-          Write-Host "Password: $env:RDP_PASS"
-          Write-Host "ZIP     : C:\Users\RDP\Desktop\OneRoyal.MT4.Terminal.zip"
-          Write-Host "Extract : C:\Users\RDP\Desktop\Restored_OneRoyal_MT4"
-          Write-Host "=================="
-          Write-Host ""
+          Write-Host "IP: $env:IP"
+          Write-Host "User: $env:RDP_USER"
+          Write-Host "Pass: $env:RDP_PASS"
 
-      - name: Maintain Connection
+      - name: Keep Alive
         shell: pwsh
         run: |
-          $end = (Get-Date).AddMinutes(345)
-          while ((Get-Date) -lt $end) {
-            Write-Host "[$(Get-Date -Format s)] RDP Active"
-            Start-Sleep -Seconds 300
-          }
+          Start-Sleep -Seconds 20000
