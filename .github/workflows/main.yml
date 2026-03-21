@@ -1,4 +1,4 @@
-name: RDP + Final Dual Platforms (Correct Paths)
+name: RDP + Final Dual Platforms (Clean Syntax)
 
 on:
   workflow_dispatch:
@@ -22,102 +22,200 @@ jobs:
           $password = "Admin@MT5#2026"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           $user = "RDP"
-          New-LocalUser -Name $user -Password $securePass -AccountNeverExpires -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Administrators" -Member $user
+
+          try {
+            New-LocalUser -Name $user -Password $securePass -AccountNeverExpires -ErrorAction Stop
+          } catch {
+            Write-Host "User may already exist, continuing..."
+          }
+
+          try { Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction Stop } catch {}
+          try { Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction Stop } catch {}
+
           "RDP_USER=$user" >> $env:GITHUB_ENV
           "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-      - name: 3. Download and Extract to Dynamic Desktop
+      - name: 3. Download and Extract to Desktop
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "gh-actions" }
-          $allReleases = Invoke-RestMethod -Uri "https://api.github.com/repos/${{ github.repository }}/releases" -Headers $headers
-          $allAssets = $allReleases.assets
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            "User-Agent"  = "gh-actions"
+            Accept        = "application/vnd.github+json"
+          }
 
+          $repo = "${{ github.repository }}"
           $desktop = [System.Environment]::GetFolderPath("Desktop")
-          Write-Host "Target Desktop Path: $desktop"
+
+          $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases" -Headers $headers
+          $allAssets = @()
+
+          foreach ($release in $releases) {
+            if ($release.assets) {
+              $allAssets += $release.assets
+            }
+          }
 
           $assetMT4 = $allAssets | Where-Object { $_.name -like "*OneRoyal.MT4.Terminal.zip*" } | Select-Object -First 1
           $assetMT5 = $allAssets | Where-Object { $_.name -like "*MetaTrader.5.zip*" } | Select-Object -First 1
 
           if ($assetMT4) {
-              Invoke-WebRequest -Uri $assetMT4.browser_download_url -OutFile "$env:TEMP\MT4.zip" -Headers $headers
-              Expand-Archive -Path "$env:TEMP\MT4.zip" -DestinationPath "$desktop\MT4_Platform" -Force
-          }
-          if ($assetMT5) {
-              Invoke-WebRequest -Uri $assetMT5.browser_download_url -OutFile "$env:TEMP\MT5.zip" -Headers $headers
-              Expand-Archive -Path "$env:TEMP\MT5.zip" -DestinationPath "$desktop\MT5_Platform" -Force
+            Write-Host "Downloading MT4: $($assetMT4.name)"
+            Invoke-WebRequest -Uri $assetMT4.browser_download_url -OutFile "$env:TEMP\MT4.zip" -Headers $headers
+            Expand-Archive -Path "$env:TEMP\MT4.zip" -DestinationPath "$desktop\MT4_Platform" -Force
+          } else {
+            Write-Host "MT4 asset not found" -ForegroundColor Red
+            exit 1
           }
 
-      - name: 4. Inject Login Configs (Enhanced)
+          if ($assetMT5) {
+            Write-Host "Downloading MT5: $($assetMT5.name)"
+            Invoke-WebRequest -Uri $assetMT5.browser_download_url -OutFile "$env:TEMP\MT5.zip" -Headers $headers
+            Expand-Archive -Path "$env:TEMP\MT5.zip" -DestinationPath "$desktop\MT5_Platform" -Force
+          } else {
+            Write-Host "MT5 asset not found" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: 4. Detect Executables and Create Login Configs
         shell: pwsh
         run: |
           $desktop = [System.Environment]::GetFolderPath("Desktop")
 
-          # ----- MT5: vm.ini in launcher folder -----
-          $mt5Launcher = Get-ChildItem -Path "$desktop\MT5_Platform" -Filter "launcher.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($mt5Launcher) {
-              $mt5Dir = $mt5Launcher.DirectoryName
-              $vmIniPath = Join-Path $mt5Dir "vm.ini"
-              $vmContent = "[Common]`r`nLogin=1069352`r`nPassword=#wU3Q!Xp`r`nServer=VTMarkets-Demo`r`n"
-              $vmContent | Out-File -FilePath $vmIniPath -Encoding ascii -Force
-              Write-Host "MT5 vm.ini created at $vmIniPath"
-          } else {
-              Write-Host "MT5 launcher.exe not found" -ForegroundColor Red
+          # MT5
+          $mt5Candidates = Get-ChildItem -Path "$desktop\MT5_Platform" -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -in @("terminal64.exe", "terminal.exe", "launcher.exe") }
+
+          $mt5Exe = $mt5Candidates |
+            Sort-Object @{ Expression = {
+              switch ($_.Name) {
+                "terminal64.exe" { 0 }
+                "terminal.exe"   { 1 }
+                "launcher.exe"   { 2 }
+                default          { 9 }
+              }
+            }} |
+            Select-Object -First 1
+
+          if (-not $mt5Exe) {
+            Write-Host "MT5 executable not found" -ForegroundColor Red
+            exit 1
           }
 
-          # ----- MT4: terminal.ini in terminal folder -----
-          $mt4Terminal = Get-ChildItem -Path "$desktop\MT4_Platform" -Filter "terminal.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($mt4Terminal) {
-              $mt4Dir = $mt4Terminal.DirectoryName
-              $terminalIniPath = Join-Path $mt4Dir "terminal.ini"
-              $iniContent = "[Common]`r`nLogin=31335811`r`nPassword=dcym47`r`nServer=ICMarketsSC-Demo03`r`n"
-              $iniContent | Out-File -FilePath $terminalIniPath -Encoding ascii -Force
-              Write-Host "MT4 terminal.ini created at $terminalIniPath"
-          } else {
-              Write-Host "MT4 terminal.exe not found" -ForegroundColor Red
+          $mt5Dir = $mt5Exe.DirectoryName
+          $vmIniPath = Join-Path $mt5Dir "vm.ini"
+
+          $vmContent = @(
+            "[Common]"
+            "Login=1069352"
+            "Password=#wU3Q!Xp"
+            "Server=VTMarkets-Demo"
+            "KeepPrivate=1"
+            "NewsEnable=0"
+          ) -join "`r`n"
+
+          $vmContent | Out-File -FilePath $vmIniPath -Encoding Unicode -Force
+
+          "MT5_EXE=$($mt5Exe.FullName)" >> $env:GITHUB_ENV
+          "MT5_INI=$vmIniPath" >> $env:GITHUB_ENV
+
+          Write-Host "MT5 EXE: $($mt5Exe.FullName)"
+          Write-Host "MT5 INI: $vmIniPath"
+
+          # MT4
+          $mt4Exe = Get-ChildItem -Path "$desktop\MT4_Platform" -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq "terminal.exe" } |
+            Select-Object -First 1
+
+          if (-not $mt4Exe) {
+            Write-Host "MT4 terminal.exe not found" -ForegroundColor Red
+            exit 1
           }
+
+          $mt4Dir = $mt4Exe.DirectoryName
+          $terminalIniPath = Join-Path $mt4Dir "terminal.ini"
+
+          $mt4Content = @(
+            "Login=31335811"
+            "Password=dcym47"
+            "Server=ICMarketsSC-Demo03"
+          ) -join "`r`n"
+
+          $mt4Content | Out-File -FilePath $terminalIniPath -Encoding ascii -Force
+
+          "MT4_EXE=$($mt4Exe.FullName)" >> $env:GITHUB_ENV
+          "MT4_INI=$terminalIniPath" >> $env:GITHUB_ENV
+
+          Write-Host "MT4 EXE: $($mt4Exe.FullName)"
+          Write-Host "MT4 INI: $terminalIniPath"
 
       - name: 5. Connect Tailscale
         shell: pwsh
         env:
           TS_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "ts.msi"
-          Start-Process msiexec.exe -ArgumentList "/i", "ts.msi", "/quiet", "/norestart" -Wait
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "$env:TEMP\ts.msi"
+          Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\ts.msi", "/quiet", "/norestart" -Wait
           & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=$env:TS_KEY --hostname=Trader-VM
-          $tsIP = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4) | Select-Object -First 1
+          $tsIP = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4 | Select-Object -First 1).Trim()
           "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: 6. Launch Platforms (with proper arguments)
+      - name: 6. Launch Platforms Correctly
         shell: pwsh
         run: |
-          $desktop = [System.Environment]::GetFolderPath("Desktop")
+          Get-Process -Name "terminal", "terminal64", "launcher", "metatrader" -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
 
-          # Kill any existing MT processes to avoid conflicts
-          Get-Process -Name "terminal", "launcher", "metatrader" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
 
-          # Launch MT5 via launcher.exe with explicit config
-          $mt5 = Get-ChildItem -Path "$desktop\MT5_Platform" -Filter "launcher.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($mt5) {
-              Write-Host "Starting MT5 from: $($mt5.FullName)"
-              Start-Process -FilePath $mt5.FullName -ArgumentList '/config:"vm.ini"' -WorkingDirectory $mt5.DirectoryName
+          # Launch MT5
+          if ($env:MT5_EXE -and (Test-Path $env:MT5_EXE) -and $env:MT5_INI -and (Test-Path $env:MT5_INI)) {
+            Write-Host "Launching MT5..."
+            Write-Host "MT5 EXE: $env:MT5_EXE"
+            Write-Host "MT5 INI: $env:MT5_INI"
+
+            Start-Process `
+              -FilePath $env:MT5_EXE `
+              -ArgumentList "/portable", "/config:$env:MT5_INI" `
+              -WorkingDirectory (Split-Path $env:MT5_EXE -Parent)
+          } else {
+            Write-Host "MT5 exe or ini missing" -ForegroundColor Red
           }
 
-          # Launch MT4 via terminal.exe with /portable flag
-          $mt4 = Get-ChildItem -Path "$desktop\MT4_Platform" -Filter "terminal.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($mt4) {
-              Write-Host "Starting MT4 from: $($mt4.FullName)"
-              Start-Process -FilePath $mt4.FullName -ArgumentList "/portable" -WorkingDirectory $mt4.DirectoryName
+          Start-Sleep -Seconds 8
+
+          # Launch MT4
+          if ($env:MT4_EXE -and (Test-Path $env:MT4_EXE) -and $env:MT4_INI -and (Test-Path $env:MT4_INI)) {
+            Write-Host "Launching MT4..."
+            Write-Host "MT4 EXE: $env:MT4_EXE"
+            Write-Host "MT4 INI: $env:MT4_INI"
+
+            Start-Process `
+              -FilePath $env:MT4_EXE `
+              -ArgumentList "/portable", "`"$env:MT4_INI`"" `
+              -WorkingDirectory (Split-Path $env:MT4_EXE -Parent)
+          } else {
+            Write-Host "MT4 exe or ini missing" -ForegroundColor Red
           }
 
       - name: 7. Keep Alive
         shell: pwsh
         run: |
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "RDP READY"
           Write-Host "Address : $env:TAILSCALE_IP"
           Write-Host "User    : $env:RDP_USER"
           Write-Host "Pass    : $env:RDP_PASS"
+          Write-Host "MT5 EXE : $env:MT5_EXE"
+          Write-Host "MT5 INI : $env:MT5_INI"
+          Write-Host "MT4 EXE : $env:MT4_EXE"
+          Write-Host "MT4 INI : $env:MT4_INI"
+          Write-Host "=============================="
+
           $end = (Get-Date).AddMinutes(345)
-          while ((Get-Date) -lt $end) { Start-Sleep -Seconds 60 }
+          while ((Get-Date) -lt $end) {
+            Start-Sleep -Seconds 60
+          }
