@@ -35,12 +35,12 @@ jobs:
           $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "gh-actions" }
           $allReleases = Invoke-RestMethod -Uri "https://api.github.com/repos/${{ github.repository }}/releases" -Headers $headers
           $allAssets = $allReleases.assets
-          
-          # تحديد مسار سطح المكتب الصحيح ديناميكياً
+
+          # Dynamic desktop path
           $desktop = [System.Environment]::GetFolderPath("Desktop")
           Write-Host "Target Desktop Path: $desktop"
 
-          # تحميل MT4 & MT5
+          # MT4 & MT5 assets
           $assetMT4 = $allAssets | Where-Object { $_.name -like "*OneRoyal.MT4.Terminal.zip*" } | Select-Object -First 1
           $assetMT5 = $allAssets | Where-Object { $_.name -like "*MetaTrader.5.zip*" } | Select-Object -First 1
 
@@ -57,19 +57,41 @@ jobs:
         shell: pwsh
         run: |
           $desktop = [System.Environment]::GetFolderPath("Desktop")
-          
-          # MT5: Launcher Config (vm.ini)
-          $mt5Dir = Get-ChildItem -Path "$desktop\MT5_Platform" -Filter "launcher.exe" -Recurse | Select-Object -First 1
-          if ($mt5Dir) {
-              "[Common]`nLogin=1069352`nPassword=#wU3Q!Xp`nServer=VTMarkets-Demo" | Out-File (Join-Path $mt5Dir.DirectoryName "vm.ini") -Encoding ascii
+
+          # ----- MT5: vm.ini in launcher's directory -----
+          $mt5Launcher = Get-ChildItem -Path "$desktop\MT5_Platform" -Filter "launcher.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($mt5Launcher) {
+              $mt5Dir = $mt5Launcher.DirectoryName
+              $vmIniPath = Join-Path $mt5Dir "vm.ini"
+              @"
+[Common]
+Login=1069352
+Password=#wU3Q!Xp
+Server=VTMarkets-Demo
+"@ | Out-File -FilePath $vmIniPath -Encoding ascii -Force
+              Write-Host "MT5 vm.ini created at $vmIniPath"
+          } else {
+              Write-Host "MT5 launcher.exe not found in MT5_Platform" -ForegroundColor Red
           }
 
-          # MT4: Terminal Config (common.ini)
-          $mt4Dir = Get-ChildItem -Path "$desktop\MT4_Platform" -Filter "terminal.exe" -Recurse | Select-Object -First 1
-          if ($mt4Dir) {
-              $cfgDir = Join-Path $mt4Dir.DirectoryName "config"
-              if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir }
-              "[Common]`nLogin=31335811`nPassword=dcym47`nServer=ICMarketsSC-Demo03" | Out-File (Join-Path $cfgDir "common.ini") -Encoding ascii
+          # ----- MT4: common.ini in config folder (with /portable) -----
+          $mt4Terminal = Get-ChildItem -Path "$desktop\MT4_Platform" -Filter "terminal.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($mt4Terminal) {
+              $mt4Dir = $mt4Terminal.DirectoryName
+              $cfgDir = Join-Path $mt4Dir "config"
+              if (-not (Test-Path $cfgDir)) {
+                  New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null
+              }
+              $commonIniPath = Join-Path $cfgDir "common.ini"
+              @"
+[Common]
+Login=31335811
+Password=dcym47
+Server=ICMarketsSC-Demo03
+"@ | Out-File -FilePath $commonIniPath -Encoding ascii -Force
+              Write-Host "MT4 common.ini created at $commonIniPath"
+          } else {
+              Write-Host "MT4 terminal.exe not found in MT4_Platform" -ForegroundColor Red
           }
 
       - name: 5. Connect Tailscale
@@ -87,14 +109,20 @@ jobs:
         shell: pwsh
         run: |
           $desktop = [System.Environment]::GetFolderPath("Desktop")
-          
-          # تشغيل MT5 عبر launcher.exe
-          $mt5 = Get-ChildItem -Path "$desktop\MT5_Platform" -Filter "launcher.exe" -Recurse | Select-Object -First 1
-          if ($mt5) { Start-Process $mt5.FullName -WorkingDirectory $mt5.DirectoryName }
-          
-          # تشغيل MT4 عبر terminal.exe
-          $mt4 = Get-ChildItem -Path "$desktop\MT4_Platform" -Filter "terminal.exe" -Recurse | Select-Object -First 1
-          if ($mt4) { Start-Process $mt4.FullName -ArgumentList "/portable" -WorkingDirectory $mt4.DirectoryName }
+
+          # Launch MT5 via launcher.exe
+          $mt5 = Get-ChildItem -Path "$desktop\MT5_Platform" -Filter "launcher.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($mt5) {
+              Write-Host "Starting MT5 from: $($mt5.FullName)"
+              Start-Process -FilePath $mt5.FullName -WorkingDirectory $mt5.DirectoryName
+          }
+
+          # Launch MT4 via terminal.exe with /portable flag
+          $mt4 = Get-ChildItem -Path "$desktop\MT4_Platform" -Filter "terminal.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($mt4) {
+              Write-Host "Starting MT4 from: $($mt4.FullName)"
+              Start-Process -FilePath $mt4.FullName -ArgumentList "/portable" -WorkingDirectory $mt4.DirectoryName
+          }
 
       - name: 7. Keep Alive
         shell: pwsh
