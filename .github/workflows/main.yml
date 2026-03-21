@@ -1,53 +1,55 @@
-name: RDP + MT5 Launcher Auto-Login
+name: RDP + Run MT5 and MT4 Together
 
 on:
   workflow_dispatch:
 
 jobs:
-  deploy:
+  deploy-dual-platforms:
     runs-on: windows-latest
     timeout-minutes: 350
 
     steps:
-      - name: 1. Setup Folders
+      - name: 1. Setup Directories
         shell: pwsh
-        run: New-Item -ItemType Directory -Force -Path "C:\MT5"
+        run: |
+          New-Item -ItemType Directory -Force -Path "C:\MT5"
+          New-Item -ItemType Directory -Force -Path "C:\MT4"
+          New-Item -ItemType Directory -Force -Path "C:\Users\RDP\Desktop"
 
-      - name: 2. Download and Extract MT5 ZIP
+      - name: 2. Download Platforms from Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $owner = "tawheebalswfy"
           $repo  = "DBP"
-          $api = "https://api.github.com/repos/$owner/$repo/releases/latest"
           $headers = @{ Authorization = "Bearer $env:GH_TOKEN" }
+          $api = "https://api.github.com/repos/$owner/$repo/releases/latest"
           $rel = Invoke-RestMethod -Uri $api -Headers $headers
-          $asset = $rel.assets | Where-Object { $_.name -like "*MetaTrader.5.zip*" } | Select-Object -First 1
-          
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "C:\MT5\mt5.zip" -Headers $headers
+
+          # تحميل ملف MT5 (MetaTrader.5.zip)
+          $assetMT5 = $rel.assets | Where-Object { $_.name -like "*MetaTrader.5.zip*" } | Select-Object -First 1
+          Invoke-WebRequest -Uri $assetMT5.browser_download_url -OutFile "C:\MT5\mt5.zip" -Headers $headers
           Expand-Archive -Path "C:\MT5\mt5.zip" -DestinationPath "C:\MT5" -Force
 
-      - name: 3. Create Login Config (vm.ini)
+          # تحميل ملف MT4 (OneRoyal.MT4.Terminal.zip)
+          $assetMT4 = $rel.assets | Where-Object { $_.name -like "*OneRoyal.MT4.Terminal.zip*" } | Select-Object -First 1
+          Invoke-WebRequest -Uri $assetMT4.browser_download_url -OutFile "C:\MT4\mt4.zip" -Headers $headers
+          Expand-Archive -Path "C:\MT4\mt4.zip" -DestinationPath "C:\MT4" -Force
+
+      - name: 3. Configure Login for MT4 & MT5
         shell: pwsh
         run: |
-          # إنشاء ملف الإعدادات داخل مجلد البرنامج الرئيسي
-          $configContent = @"
-          [Common]
-          Login=1069352
-          Password=#wU3Q!Xp
-          Server=VTMarkets-Demo
-          EnableNews=0
-          ProxyEnable=0
-          "@
-          # سنقوم بوضع الملف في المجلد الرئيسي وفي مجلد config للاحتياط
-          $basePath = Get-ChildItem -Path "C:\MT5" -Filter "launcher.exe" -Recurse | Select-Object -ExpandProperty DirectoryName -First 1
-          $configPath = Join-Path $basePath "config"
-          if (-not (Test-Path $configPath)) { New-Item -ItemType Directory -Path $configPath }
-          
-          $configContent | Out-File -FilePath (Join-Path $basePath "vm.ini") -Encoding ascii
-          $configContent | Out-File -FilePath (Join-Path $configPath "common.ini") -Encoding ascii
-          Write-Host "Config files created in $basePath"
+          # إعداد ملف MT5
+          $configMT5 = "[Common]`nLogin=1069352`nPassword=#wU3Q!Xp`nServer=VTMarkets-Demo"
+          $mt5Dir = Get-ChildItem -Path "C:\MT5" -Filter "launcher.exe" -Recurse | Select-Object -ExpandProperty DirectoryName -First 1
+          $configMT5 | Out-File -FilePath (Join-Path $mt5Dir "vm.ini") -Encoding ascii
+
+          # إعداد ملف MT4 بالحساب الجديد
+          $configMT4 = "[Common]`nLogin=31335811`nPassword=dcym47`nServer=ICMarketsSC-Demo03"
+          $mt4Dir = Get-ChildItem -Path "C:\MT4" -Filter "terminal.exe" -Recurse | Select-Object -ExpandProperty DirectoryName -First 1
+          $configMT4 | Out-File -FilePath (Join-Path $mt4Dir "config\common.ini") -Encoding ascii
+          Write-Host "Configs Ready for both platforms."
 
       - name: 4. Configure RDP User
         shell: pwsh
@@ -59,40 +61,41 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
 
-      - name: 5. Start MT5 via Launcher
-        shell: pwsh
-        run: |
-          # البحث عن launcher.exe وتشغيله
-          $launcher = Get-ChildItem -Path "C:\MT5" -Filter "launcher.exe" -Recurse | Select-Object -First 1
-          if ($launcher) {
-              Write-Host "Launching MT5 via: $($launcher.FullName)"
-              # تشغيل الـ Launcher مع تمرير ملف الإعدادات للتيرمينال
-              Start-Process -FilePath $launcher.FullName -WorkingDirectory $launcher.DirectoryName
-              
-              # انتظار بسيط ثم محاولة تشغيل التيرمينال بملف الإعدادات إذا لم يقم اللاونشر بذلك
-              Start-Sleep -Seconds 10
-              $terminal = Get-ChildItem -Path "C:\MT5" -Filter "terminal64.exe" -Recurse | Select-Object -First 1
-              if ($terminal) {
-                  Start-Process -FilePath $terminal.FullName -ArgumentList "/portable /config:vm.ini" -WorkingDirectory $terminal.DirectoryName
-              }
-          } else {
-              Write-Error "launcher.exe not found!"
-              exit 1
-          }
-
-      - name: 6. Connect Tailscale
+      - name: 5. Start Tailscale
         shell: pwsh
         env:
           TS_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "ts.msi"
           Start-Process msiexec.exe -ArgumentList "/i", "ts.msi", "/quiet", "/norestart" -Wait
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=$env:TS_KEY --hostname=GH-MT5
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=$env:TS_KEY --hostname=GH-DUAL-MT
           $ip = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4)
-          Write-Host "RDP IP: $ip"
+          echo "TS_IP=$ip" >> $env:GITHUB_ENV
 
-      - name: 7. Keep Alive
+      - name: 6. Launch Both Platforms
         shell: pwsh
         run: |
+          # تشغيل MT5 عبر الـ Launcher
+          $mt5Launcher = Get-ChildItem -Path "C:\MT5" -Filter "launcher.exe" -Recurse | Select-Object -First 1
+          if ($mt5Launcher) {
+              Start-Process -FilePath $mt5Launcher.FullName -WorkingDirectory $mt5Launcher.DirectoryName
+              Write-Host "MT5 Launcher Started."
+          }
+
+          # تشغيل MT4 (OneRoyal) بوضع Portable
+          $mt4Terminal = Get-ChildItem -Path "C:\MT4" -Filter "terminal.exe" -Recurse | Select-Object -First 1
+          if ($mt4Terminal) {
+              Start-Process -FilePath $mt4Terminal.FullName -ArgumentList "/portable" -WorkingDirectory $mt4Terminal.DirectoryName
+              Write-Host "MT4 Started."
+          }
+
+      - name: 7. Show Login Info & Keep Alive
+        shell: pwsh
+        run: |
+          Write-Host "----------------------------------------------"
+          Write-Host "RDP IP: $env:TS_IP | User: RDP | Pass: Admin@MT5#2026"
+          Write-Host "MT5 Account: 1069352 (VTMarkets)"
+          Write-Host "MT4 Account: 31335811 (ICMarkets)"
+          Write-Host "----------------------------------------------"
           $limit = (Get-Date).AddMinutes(345)
           while ((Get-Date) -lt $limit) { Start-Sleep -Seconds 60 }
