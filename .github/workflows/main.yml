@@ -1,4 +1,4 @@
-name: RDP + MT5 REAL FIX
+name: RDP + MT5 FINAL WORKING
 
 on:
   workflow_dispatch:
@@ -25,6 +25,9 @@ jobs:
           echo "RDP_USER=RDP" >> $env:GITHUB_ENV
           echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
 
+          # إنشاء Desktop يدوي
+          New-Item -ItemType Directory -Force -Path "C:\Users\RDP\Desktop" | Out-Null
+
       - name: Download MT5 Official
         shell: pwsh
         run: |
@@ -33,11 +36,10 @@ jobs:
 
           Invoke-WebRequest -Uri $url -OutFile $file
 
-      - name: Extract MT5 (Portable Trick)
+      - name: Run MT5 Portable
         shell: pwsh
         run: |
           $file = "C:\Users\RDP\Desktop\mt5.exe"
-          $dest = "C:\Users\RDP\Desktop\MT5"
 
           Start-Process -FilePath $file -ArgumentList "/portable" -Wait
 
@@ -61,32 +63,6 @@ jobs:
           Start-Process -FilePath $terminal.FullName -ArgumentList "/portable /config:$configPath"
 
           Write-Host "MT5 RUNNING ✅"
-
-      - name: Install Tailscale
-        shell: pwsh
-        run: |
-          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-          $file = "$env:TEMP\ts.msi"
-          Invoke-WebRequest -Uri $url -OutFile $file
-          Start-Process msiexec.exe -ArgumentList "/i `"$file`" /quiet" -Wait
-
-      - name: Connect Tailscale
-        shell: pwsh
-        env:
-          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
-        run: |
-          $exe = "C:\Program Files\Tailscale\tailscale.exe"
-          & $exe up --authkey=$env:TAILSCALE_AUTH_KEY
-
-          $ip = (& $exe ip -4 | Select-Object -First 1)
-          echo "IP=$ip" >> $env:GITHUB_ENV
-
-      - name: Show Info
-        shell: pwsh
-        run: |
-          Write-Host "IP: $env:IP"
-          Write-Host "User: $env:RDP_USER"
-          Write-Host "Pass: $env:RDP_PASS"
 
       - name: Keep Alive
         shell: pwsh
