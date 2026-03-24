@@ -1,4 +1,4 @@
-name: RDP + Final Dual Platforms (Clean Syntax)
+name: RDP + Final Dual Platforms (Safe Multi-Release)
 
 on:
   workflow_dispatch:
@@ -50,32 +50,59 @@ jobs:
           $desktop = [System.Environment]::GetFolderPath("Desktop")
 
           $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases" -Headers $headers
-          $allAssets = @()
+
+          $assetMT4 = $null
+          $assetMT5 = $null
+          $assetMT4Release = $null
+          $assetMT5Release = $null
 
           foreach ($release in $releases) {
-            if ($release.assets) {
-              $allAssets += $release.assets
+            if (-not $release.assets) { continue }
+
+            if (-not $assetMT4) {
+              $candidateMT4 = $release.assets | Where-Object {
+                $_.name -like "*OneRoyal.MT4.Terminal.zip*"
+              } | Select-Object -First 1
+
+              if ($candidateMT4) {
+                $assetMT4 = $candidateMT4
+                $assetMT4Release = $release.tag_name
+              }
+            }
+
+            if (-not $assetMT5) {
+              $candidateMT5 = $release.assets | Where-Object {
+                $_.name -like "*MetaTrader.5.zip*" -or $_.name -like "*MT5.zip*"
+              } | Select-Object -First 1
+
+              if ($candidateMT5) {
+                $assetMT5 = $candidateMT5
+                $assetMT5Release = $release.tag_name
+              }
+            }
+
+            if ($assetMT4 -and $assetMT5) {
+              break
             }
           }
 
-          $assetMT4 = $allAssets | Where-Object { $_.name -like "*OneRoyal.MT4.Terminal.zip*" } | Select-Object -First 1
-          $assetMT5 = $allAssets | Where-Object { $_.name -like "*MetaTrader.5.zip*" } | Select-Object -First 1
-
           if ($assetMT4) {
             Write-Host "Downloading MT4: $($assetMT4.name)"
+            Write-Host "Found in release: $assetMT4Release"
             Invoke-WebRequest -Uri $assetMT4.browser_download_url -OutFile "$env:TEMP\MT4.zip" -Headers $headers
             Expand-Archive -Path "$env:TEMP\MT4.zip" -DestinationPath "$desktop\MT4_Platform" -Force
           } else {
-            Write-Host "MT4 asset not found" -ForegroundColor Red
+            Write-Host "MT4 asset not found in any release" -ForegroundColor Red
             exit 1
           }
 
           if ($assetMT5) {
             Write-Host "Downloading MT5: $($assetMT5.name)"
+            Write-Host "Found in release: $assetMT5Release"
             Invoke-WebRequest -Uri $assetMT5.browser_download_url -OutFile "$env:TEMP\MT5.zip" -Headers $headers
             Expand-Archive -Path "$env:TEMP\MT5.zip" -DestinationPath "$desktop\MT5_Platform" -Force
           } else {
-            Write-Host "MT5 asset not found" -ForegroundColor Red
+            Write-Host "MT5 asset not found in any release" -ForegroundColor Red
             exit 1
           }
 
