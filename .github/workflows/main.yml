@@ -136,9 +136,9 @@ jobs:
 
           $vmContent = @(
             "[Common]"
-            "Login=1069352"
-            "Password=#wU3Q!Xp"
-            "Server=VTMarkets-Demo"
+            "Login=52814428"
+            "Password=XWkO&5Z00tXPr8"
+            "Server=ICMarketsSC-Demo"
             "KeepPrivate=1"
             "NewsEnable=0"
           ) -join "`r`n"
