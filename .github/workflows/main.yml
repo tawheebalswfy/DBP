@@ -40,6 +40,7 @@ jobs:
         shell: pwsh
         run: |
           $password = "Admin@MT5#2026"
+
           $securePass = ConvertTo-SecureString `
             $password `
             -AsPlainText `
@@ -263,7 +264,6 @@ jobs:
 
       - name: 4. Download Digital Time Wheel
         shell: pwsh
-
         run: |
           $desktop = $env:RDP_DESKTOP
 
@@ -293,9 +293,17 @@ jobs:
             https://github.com/tawheebalswfy/digital-time-wheel.git `
             $projectPath
 
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Host "Git clone failed." `
+                -ForegroundColor Red
+
+              exit 1
+          }
+
           if (-not (Test-Path $projectPath)) {
 
-              Write-Host "Clone failed." `
+              Write-Host "Project directory was not created." `
                 -ForegroundColor Red
 
               exit 1
@@ -310,89 +318,266 @@ jobs:
 
 
       # ============================================================
-      # 5. INSTALL DIGITAL TIME WHEEL PACKAGES
+      # 5. FIND REAL APP + INSTALL PACKAGES
       # ============================================================
 
-      - name: 5. Install Digital Time Wheel Packages
+      - name: 5. Find App and Install Digital Time Wheel Packages
         shell: pwsh
-
         run: |
-          $projectPath = $env:DIGITAL_TIME_WHEEL
+          $repoPath = $env:DIGITAL_TIME_WHEEL
 
-          if (-not $projectPath) {
-              $projectPath = "C:\Users\RDP\Desktop\digital-time-wheel"
+          if (-not $repoPath) {
+              $repoPath = "C:\Users\RDP\Desktop\digital-time-wheel"
           }
 
-          if (-not (Test-Path $projectPath)) {
+          if (-not (Test-Path $repoPath)) {
 
-              Write-Host "Project directory does not exist." `
+              Write-Host "Digital Time Wheel repository not found." `
                 -ForegroundColor Red
 
               exit 1
           }
 
-          Set-Location $projectPath
-
           Write-Host ""
-          Write-Host "=========================================="
-          Write-Host "Installing Digital Time Wheel dependencies"
-          Write-Host "=========================================="
+          Write-Host "============================================"
+          Write-Host "Searching for application package.json"
+          Write-Host "============================================"
           Write-Host ""
 
-          if (Test-Path "$projectPath\pnpm-lock.yaml") {
+          $packageFiles = Get-ChildItem `
+            -Path $repoPath `
+            -Filter "package.json" `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.FullName -notmatch "\\node_modules\\"
+            }
 
-              Write-Host "Detected pnpm project."
+          if (-not $packageFiles) {
+
+              Write-Host "No package.json found anywhere." `
+                -ForegroundColor Red
+
+              Write-Host ""
+              Write-Host "Repository files:"
+              Write-Host ""
+
+              Get-ChildItem `
+                -Path $repoPath `
+                -Recurse `
+                -Depth 3 `
+                -ErrorAction SilentlyContinue |
+                Select-Object FullName |
+                Format-Table -AutoSize
+
+              exit 1
+          }
+
+          $selectedPackage = $null
+
+          foreach ($pkgFile in $packageFiles) {
+
+              try {
+
+                  $pkg = Get-Content `
+                    $pkgFile.FullName `
+                    -Raw |
+                    ConvertFrom-Json
+
+                  $scripts = @()
+
+                  if ($pkg.scripts) {
+                      $scripts = @(
+                          $pkg.scripts.PSObject.Properties.Name
+                      )
+                  }
+
+                  Write-Host "Found:"
+                  Write-Host $pkgFile.FullName
+                  Write-Host "Scripts: $($scripts -join ', ')"
+                  Write-Host ""
+
+                  if (
+                      ($scripts -contains "dev") -or
+                      ($scripts -contains "start")
+                  ) {
+
+                      $selectedPackage = $pkgFile
+                      break
+                  }
+              }
+              catch {
+
+                  Write-Host "Could not read:"
+                  Write-Host $pkgFile.FullName
+              }
+          }
+
+          if (-not $selectedPackage) {
+
+              Write-Host "No package.json with dev/start found." `
+                -ForegroundColor Red
+
+              exit 1
+          }
+
+          $appPath = $selectedPackage.DirectoryName
+
+          "DIGITAL_APP_PATH=$appPath" >> $env:GITHUB_ENV
+
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "Application found:"
+          Write-Host $appPath
+          Write-Host "============================================"
+          Write-Host ""
+
+          # --------------------------------------------------------
+          # Find package manager / install root
+          # --------------------------------------------------------
+
+          $installPath = $appPath
+          $current = $appPath
+          $manager = "npm"
+
+          while ($true) {
+
+              if (Test-Path (Join-Path $current "pnpm-lock.yaml")) {
+                  $manager = "pnpm"
+                  $installPath = $current
+                  break
+              }
+
+              if (Test-Path (Join-Path $current "yarn.lock")) {
+                  $manager = "yarn"
+                  $installPath = $current
+                  break
+              }
+
+              if (Test-Path (Join-Path $current "package-lock.json")) {
+                  $manager = "npm"
+                  $installPath = $current
+                  break
+              }
+
+              if ($current -eq $repoPath) {
+                  break
+              }
+
+              $parent = Split-Path $current -Parent
+
+              if (
+                  (-not $parent) -or
+                  ($parent.Length -lt $repoPath.Length)
+              ) {
+                  break
+              }
+
+              $current = $parent
+          }
+
+          "DIGITAL_PACKAGE_MANAGER=$manager" >> $env:GITHUB_ENV
+          "DIGITAL_INSTALL_PATH=$installPath" >> $env:GITHUB_ENV
+
+          Write-Host "Package manager:"
+          Write-Host $manager
+
+          Write-Host ""
+          Write-Host "Install directory:"
+          Write-Host $installPath
+
+          Write-Host ""
+
+          Set-Location $installPath
+
+          if ($manager -eq "pnpm") {
+
+              Write-Host "Installing with pnpm..."
 
               corepack enable
 
-              corepack prepare pnpm@latest --activate
-
               pnpm install
-          }
-          elseif (Test-Path "$projectPath\yarn.lock") {
 
-              Write-Host "Detected Yarn project."
+              if ($LASTEXITCODE -ne 0) {
+                  exit $LASTEXITCODE
+              }
+          }
+          elseif ($manager -eq "yarn") {
+
+              Write-Host "Installing with yarn..."
 
               corepack enable
 
               yarn install
-          }
-          elseif (Test-Path "$projectPath\package.json") {
 
-              Write-Host "Detected npm project."
-
-              npm install
+              if ($LASTEXITCODE -ne 0) {
+                  exit $LASTEXITCODE
+              }
           }
           else {
 
-              Write-Host "package.json was not found." `
-                -ForegroundColor Yellow
+              Write-Host "Installing with npm..."
+
+              if (Test-Path "$installPath\package-lock.json") {
+                  npm ci
+
+                  if ($LASTEXITCODE -ne 0) {
+
+                      Write-Host "npm ci failed, trying npm install..."
+
+                      npm install
+                  }
+              }
+              else {
+                  npm install
+              }
+
+              if ($LASTEXITCODE -ne 0) {
+                  exit $LASTEXITCODE
+              }
           }
+
+          Write-Host ""
+          Write-Host "Dependencies installed successfully."
+          Write-Host ""
 
 
       # ============================================================
-      # 6. START DIGITAL TIME WHEEL WEB SERVER
+      # 6. START DIGITAL TIME WHEEL
       # ============================================================
 
       - name: 6. Start Digital Time Wheel
         shell: pwsh
-
         run: |
-          $projectPath = $env:DIGITAL_TIME_WHEEL
+          $appPath = $env:DIGITAL_APP_PATH
+          $manager = $env:DIGITAL_PACKAGE_MANAGER
 
-          if (-not $projectPath) {
-              $projectPath = "C:\Users\RDP\Desktop\digital-time-wheel"
+          if (-not $appPath) {
+
+              Write-Host "DIGITAL_APP_PATH is missing." `
+                -ForegroundColor Red
+
+              exit 1
           }
 
-          Set-Location $projectPath
+          if (-not (Test-Path $appPath)) {
+
+              Write-Host "Application directory not found." `
+                -ForegroundColor Red
+
+              exit 1
+          }
+
+          Set-Location $appPath
 
           $packageJsonPath = Join-Path `
-            $projectPath `
+            $appPath `
             "package.json"
 
           if (-not (Test-Path $packageJsonPath)) {
 
-              Write-Host "package.json not found." `
+              Write-Host "Application package.json missing." `
                 -ForegroundColor Red
 
               exit 1
@@ -403,82 +588,74 @@ jobs:
             -Raw |
             ConvertFrom-Json
 
-          $hasDev = $false
-          $hasStart = $false
+          $scriptNames = @()
 
           if ($packageJson.scripts) {
-
-              if (
-                  $packageJson.scripts.PSObject.Properties.Name `
-                    -contains "dev"
-              ) {
-                  $hasDev = $true
-              }
-
-              if (
-                  $packageJson.scripts.PSObject.Properties.Name `
-                    -contains "start"
-              ) {
-                  $hasStart = $true
-              }
+              $scriptNames = @(
+                  $packageJson.scripts.PSObject.Properties.Name
+              )
           }
 
-          $command = $null
+          Write-Host ""
+          Write-Host "Available scripts:"
+          Write-Host ($scriptNames -join ", ")
+          Write-Host ""
 
-          if (Test-Path "$projectPath\pnpm-lock.yaml") {
+          $script = $null
 
-              if ($hasDev) {
-                  $command = "pnpm run dev -- --host 0.0.0.0"
-              }
-              elseif ($hasStart) {
-                  $command = "pnpm start"
-              }
+          if ($scriptNames -contains "dev") {
+              $script = "dev"
           }
-          elseif (Test-Path "$projectPath\yarn.lock") {
-
-              if ($hasDev) {
-                  $command = "yarn dev --host 0.0.0.0"
-              }
-              elseif ($hasStart) {
-                  $command = "yarn start"
-              }
-          }
-          else {
-
-              if ($hasDev) {
-                  $command = "npm run dev -- --host 0.0.0.0"
-              }
-              elseif ($hasStart) {
-                  $command = "npm start"
-              }
+          elseif ($scriptNames -contains "start") {
+              $script = "start"
           }
 
-          if (-not $command) {
+          if (-not $script) {
 
               Write-Host "No dev or start script found." `
                 -ForegroundColor Red
 
-              Write-Host ""
-              Write-Host "Available scripts:"
-
-              $packageJson.scripts |
-                Format-List
-
               exit 1
           }
 
+          if (-not $manager) {
+              $manager = "npm"
+          }
+
+          if ($manager -eq "pnpm") {
+              $command = "pnpm run $script"
+          }
+          elseif ($manager -eq "yarn") {
+              $command = "yarn $script"
+          }
+          else {
+              $command = "npm run $script"
+          }
+
           Write-Host ""
-          Write-Host "Starting website with:"
+          Write-Host "============================================"
+          Write-Host "Starting Digital Time Wheel"
+          Write-Host "============================================"
+          Write-Host ""
+
+          Write-Host "Application:"
+          Write-Host $appPath
+
+          Write-Host ""
+          Write-Host "Command:"
           Write-Host $command
+
           Write-Host ""
 
           $serverLog = `
             "C:\Users\RDP\Desktop\digital-time-wheel-server.log"
 
           $serverCommand = @"
-          Set-Location '$projectPath'
+          Set-Location '$appPath'
 
-          `$Host.UI.RawUI.WindowTitle = 'Digital Time Wheel Server'
+          Write-Host 'Digital Time Wheel Server'
+          Write-Host 'Path: $appPath'
+          Write-Host 'Command: $command'
 
           $command *>> '$serverLog'
           "@
@@ -497,31 +674,73 @@ jobs:
               $encoded `
             -WindowStyle Hidden
 
-          Start-Sleep -Seconds 15
+          Start-Sleep -Seconds 20
 
           Write-Host ""
-          Write-Host "Website server started."
+          Write-Host "Checking web ports..."
           Write-Host ""
 
-          Write-Host "Checking ports..."
+          $commonPorts = @(
+              3000,
+              3001,
+              4173,
+              4200,
+              5000,
+              5173,
+              5174,
+              8000,
+              8080
+          )
 
-          Get-NetTCPConnection `
+          $listening = Get-NetTCPConnection `
             -State Listen `
             -ErrorAction SilentlyContinue |
             Where-Object {
-                $_.LocalPort -in @(
-                    3000,
-                    4173,
-                    5000,
-                    5173,
-                    8000,
-                    8080
-                )
-            } |
-            Format-Table `
-              LocalAddress,
-              LocalPort,
-              State
+                $_.LocalPort -in $commonPorts
+            }
+
+          if ($listening) {
+
+              $listening |
+                Format-Table `
+                  LocalAddress,
+                  LocalPort,
+                  State `
+                -AutoSize
+
+              $webPort = (
+                  $listening |
+                  Select-Object -First 1
+              ).LocalPort
+
+              "DIGITAL_WEB_PORT=$webPort" >> $env:GITHUB_ENV
+
+              Write-Host ""
+              Write-Host "Detected website port:"
+              Write-Host $webPort
+          }
+          else {
+
+              Write-Host ""
+              Write-Host "No common web port detected yet." `
+                -ForegroundColor Yellow
+
+              Write-Host ""
+              Write-Host "Server log:"
+              Write-Host $serverLog
+
+              if (Test-Path $serverLog) {
+
+                  Write-Host ""
+                  Write-Host "Last server log lines:"
+                  Write-Host ""
+
+                  Get-Content `
+                    $serverLog `
+                    -Tail 50 `
+                    -ErrorAction SilentlyContinue
+              }
+          }
 
 
       # ============================================================
@@ -530,7 +749,6 @@ jobs:
 
       - name: 7. Configure Chrome Auto Open
         shell: pwsh
-
         run: |
           $rdpProfile = "C:\Users\RDP"
 
@@ -551,23 +769,15 @@ jobs:
           @'
           @echo off
 
-          timeout /t 8 /nobreak >nul
+          timeout /t 10 /nobreak >nul
 
-          set URL=http://localhost:5173
+          powershell -NoProfile -ExecutionPolicy Bypass -Command "$ports = @(5173,3000,3001,5174,4173,4200,5000,8000,8080); $found = $null; foreach ($p in $ports) { try { $r = Invoke-WebRequest -Uri ('http://localhost:' + $p) -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500) { $found = $p; break } } catch {} }; if ($found) { Set-Content -Path $env:TEMP\digital-wheel-port.txt -Value $found }"
 
-          powershell -NoProfile -Command ^
-          "$ports = @(5173,3000,4173,5000,8000,8080); ^
-          foreach ($p in $ports) { ^
-          try { ^
-          $r = Invoke-WebRequest -Uri ('http://localhost:' + $p) -UseBasicParsing -TimeoutSec 2; ^
-          if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500) { ^
-          Write-Output $p; ^
-          break ^
-          } ^
-          } catch {} ^
-          }" > "%TEMP%\digital-wheel-port.txt"
+          set PORT=
 
-          set /p PORT=<"%TEMP%\digital-wheel-port.txt"
+          if exist "%TEMP%\digital-wheel-port.txt" (
+              set /p PORT=<"%TEMP%\digital-wheel-port.txt"
+          )
 
           if "%PORT%"=="" set PORT=5173
 
@@ -583,6 +793,16 @@ jobs:
               exit /b
           )
 
+          if exist "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" (
+              start "" "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" "%URL%"
+              exit /b
+          )
+
+          if exist "C:\Program Files\Microsoft\Edge\Application\msedge.exe" (
+              start "" "C:\Program Files\Microsoft\Edge\Application\msedge.exe" "%URL%"
+              exit /b
+          )
+
           start "" "%URL%"
           '@ |
             Set-Content `
@@ -590,7 +810,7 @@ jobs:
               -Encoding ASCII
 
           Write-Host ""
-          Write-Host "Chrome auto-open configured:"
+          Write-Host "Browser auto-open configured:"
           Write-Host $startupFile
           Write-Host ""
 
@@ -601,7 +821,6 @@ jobs:
 
       - name: 8. Detect Executables and Create Login Configs
         shell: pwsh
-
         run: |
           $desktop = $env:RDP_DESKTOP
 
@@ -627,7 +846,6 @@ jobs:
                 )
             }
 
-
           $mt5Exe = $mt5Candidates |
             Sort-Object @{
                 Expression = {
@@ -646,7 +864,6 @@ jobs:
             } |
             Select-Object -First 1
 
-
           if (-not $mt5Exe) {
 
               Write-Host "MT5 executable not found." `
@@ -655,13 +872,11 @@ jobs:
               exit 1
           }
 
-
           $mt5Dir = $mt5Exe.DirectoryName
 
           $vmIniPath = Join-Path `
             $mt5Dir `
             "vm.ini"
-
 
           $vmContent = @(
 
@@ -679,18 +894,14 @@ jobs:
 
           ) -join "`r`n"
 
-
           $vmContent |
             Out-File `
               -FilePath $vmIniPath `
               -Encoding Unicode `
               -Force
 
-
           "MT5_EXE=$($mt5Exe.FullName)" >> $env:GITHUB_ENV
-
           "MT5_INI=$vmIniPath" >> $env:GITHUB_ENV
-
 
           Write-Host ""
           Write-Host "MT5 EXE:"
@@ -711,7 +922,6 @@ jobs:
             } |
             Select-Object -First 1
 
-
           if (-not $mt4Exe) {
 
               Write-Host "MT4 executable not found." `
@@ -720,13 +930,11 @@ jobs:
               exit 1
           }
 
-
           $mt4Dir = $mt4Exe.DirectoryName
 
           $terminalIniPath = Join-Path `
             $mt4Dir `
             "terminal.ini"
-
 
           $mt4Content = @(
 
@@ -738,18 +946,14 @@ jobs:
 
           ) -join "`r`n"
 
-
           $mt4Content |
             Out-File `
               -FilePath $terminalIniPath `
               -Encoding ascii `
               -Force
 
-
           "MT4_EXE=$($mt4Exe.FullName)" >> $env:GITHUB_ENV
-
           "MT4_INI=$terminalIniPath" >> $env:GITHUB_ENV
-
 
           Write-Host ""
           Write-Host "MT4 EXE:"
@@ -762,15 +966,21 @@ jobs:
 
       - name: 9. Connect Tailscale
         shell: pwsh
-
         env:
           TS_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
 
         run: |
+          if (-not $env:TS_KEY) {
+
+              Write-Host "TAILSCALE_AUTH_KEY secret is empty." `
+                -ForegroundColor Red
+
+              exit 1
+          }
+
           Invoke-WebRequest `
             -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" `
             -OutFile "$env:TEMP\ts.msi"
-
 
           Start-Process `
             msiexec.exe `
@@ -781,22 +991,26 @@ jobs:
               "/norestart" `
             -Wait
 
-
           & "C:\Program Files\Tailscale\tailscale.exe" `
             up `
             --authkey=$env:TS_KEY `
             --hostname=Trader-VM
 
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Host "tailscale up failed." `
+                -ForegroundColor Red
+
+              exit $LASTEXITCODE
+          }
 
           Start-Sleep -Seconds 5
-
 
           $tsIP = & `
             "C:\Program Files\Tailscale\tailscale.exe" `
             ip `
             -4 |
             Select-Object -First 1
-
 
           if (-not $tsIP) {
 
@@ -808,12 +1022,9 @@ jobs:
               exit 1
           }
 
-
           $tsIP = $tsIP.Trim()
 
-
           "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-
 
           Write-Host ""
           Write-Host "Tailscale IP:"
@@ -827,7 +1038,6 @@ jobs:
 
       - name: 10. Launch MT4 and MT5
         shell: pwsh
-
         run: |
           Get-Process `
             -Name `
@@ -840,11 +1050,13 @@ jobs:
               -Force `
               -ErrorAction SilentlyContinue
 
-
           Start-Sleep -Seconds 3
 
 
+          # ========================================================
           # MT5
+          # ========================================================
+
           if (
               $env:MT5_EXE -and
               (Test-Path $env:MT5_EXE)
@@ -860,12 +1072,19 @@ jobs:
                 -WorkingDirectory `
                   (Split-Path $env:MT5_EXE -Parent)
           }
+          else {
 
+              Write-Host "MT5 executable missing." `
+                -ForegroundColor Yellow
+          }
 
           Start-Sleep -Seconds 8
 
 
+          # ========================================================
           # MT4
+          # ========================================================
+
           if (
               $env:MT4_EXE -and
               (Test-Path $env:MT4_EXE)
@@ -881,6 +1100,11 @@ jobs:
                 -WorkingDirectory `
                   (Split-Path $env:MT4_EXE -Parent)
           }
+          else {
+
+              Write-Host "MT4 executable missing." `
+                -ForegroundColor Yellow
+          }
 
 
       # ============================================================
@@ -889,7 +1113,6 @@ jobs:
 
       - name: 11. Keep Alive
         shell: pwsh
-
         run: |
           Write-Host ""
           Write-Host "============================================"
@@ -897,20 +1120,28 @@ jobs:
           Write-Host "============================================"
 
           Write-Host "Address : $env:TAILSCALE_IP"
-
           Write-Host "User    : $env:RDP_USER"
-
           Write-Host "Pass    : $env:RDP_PASS"
 
           Write-Host ""
 
-          Write-Host "Digital Time Wheel:"
+          Write-Host "Digital Time Wheel Repository:"
           Write-Host $env:DIGITAL_TIME_WHEEL
 
           Write-Host ""
 
-          Write-Host "The website should open automatically"
-          Write-Host "after you sign in to the RDP session."
+          Write-Host "Digital Time Wheel App:"
+          Write-Host $env:DIGITAL_APP_PATH
+
+          Write-Host ""
+
+          if ($env:DIGITAL_WEB_PORT) {
+              Write-Host "Website:"
+              Write-Host "http://localhost:$env:DIGITAL_WEB_PORT"
+          }
+          else {
+              Write-Host "Website port will be detected by browser startup script."
+          }
 
           Write-Host ""
 
@@ -922,14 +1153,11 @@ jobs:
           Write-Host "MT4:"
           Write-Host $env:MT4_EXE
 
-          Write-Host "============================================"
           Write-Host ""
-
+          Write-Host "============================================"
 
           $end = (Get-Date).AddMinutes(345)
 
-
           while ((Get-Date) -lt $end) {
-
               Start-Sleep -Seconds 60
           }
