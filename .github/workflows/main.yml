@@ -1,4 +1,4 @@
-name: RDP + Final Dual Platforms (Safe Multi-Release)
+name: RDP + MT4 + MT5 + Digital Time Wheel
 
 on:
   workflow_dispatch:
@@ -9,240 +9,927 @@ jobs:
     timeout-minutes: 350
 
     steps:
+
+      # ============================================================
+      # 1. SETUP RDP
+      # ============================================================
+
       - name: 1. Setup RDP Settings
         shell: pwsh
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
-          Restart-Service -Name TermService -Force
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" `
+            -Value 0 `
+            -Force
+
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop" `
+            | Out-Null
+
+          Restart-Service `
+            -Name TermService `
+            -Force
+
+
+      # ============================================================
+      # 2. CREATE RDP USER
+      # ============================================================
 
       - name: 2. Create RDP User
         shell: pwsh
         run: |
           $password = "Admin@MT5#2026"
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          $securePass = ConvertTo-SecureString `
+            $password `
+            -AsPlainText `
+            -Force
+
           $user = "RDP"
 
           try {
-            New-LocalUser -Name $user -Password $securePass -AccountNeverExpires -ErrorAction Stop
-          } catch {
-            Write-Host "User may already exist, continuing..."
+              New-LocalUser `
+                -Name $user `
+                -Password $securePass `
+                -AccountNeverExpires `
+                -ErrorAction Stop
+          }
+          catch {
+              Write-Host "RDP user may already exist."
           }
 
-          try { Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction Stop } catch {}
-          try { Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction Stop } catch {}
+          try {
+              Add-LocalGroupMember `
+                -Group "Administrators" `
+                -Member $user `
+                -ErrorAction Stop
+          }
+          catch {}
+
+          try {
+              Add-LocalGroupMember `
+                -Group "Remote Desktop Users" `
+                -Member $user `
+                -ErrorAction Stop
+          }
+          catch {}
+
+          $rdpDesktop = "C:\Users\$user\Desktop"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $rdpDesktop `
+            -Force `
+            | Out-Null
 
           "RDP_USER=$user" >> $env:GITHUB_ENV
           "RDP_PASS=$password" >> $env:GITHUB_ENV
+          "RDP_DESKTOP=$rdpDesktop" >> $env:GITHUB_ENV
 
-      - name: 3. Download and Extract to Desktop
+          Write-Host ""
+          Write-Host "RDP User:"
+          Write-Host $user
+
+          Write-Host ""
+          Write-Host "RDP Desktop:"
+          Write-Host $rdpDesktop
+
+
+      # ============================================================
+      # 3. DOWNLOAD MT4 + MT5
+      # ============================================================
+
+      - name: 3. Download MT4 and MT5
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+
         run: |
           $headers = @{
-            Authorization = "Bearer $env:GH_TOKEN"
-            "User-Agent"  = "gh-actions"
-            Accept        = "application/vnd.github+json"
+              Authorization = "Bearer $env:GH_TOKEN"
+              "User-Agent"  = "gh-actions"
+              Accept        = "application/vnd.github+json"
           }
 
           $repo = "${{ github.repository }}"
-          $desktop = [System.Environment]::GetFolderPath("Desktop")
+          $desktop = $env:RDP_DESKTOP
 
-          $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases" -Headers $headers
+          if (-not $desktop) {
+              $desktop = "C:\Users\RDP\Desktop"
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path $desktop `
+            -Force `
+            | Out-Null
+
+          $releases = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/$repo/releases" `
+            -Headers $headers
 
           $assetMT4 = $null
           $assetMT5 = $null
+
           $assetMT4Release = $null
           $assetMT5Release = $null
 
           foreach ($release in $releases) {
-            if (-not $release.assets) { continue }
 
-            if (-not $assetMT4) {
-              $candidateMT4 = $release.assets | Where-Object {
-                $_.name -like "*OneRoyal.MT4.Terminal.zip*"
-              } | Select-Object -First 1
-
-              if ($candidateMT4) {
-                $assetMT4 = $candidateMT4
-                $assetMT4Release = $release.tag_name
+              if (-not $release.assets) {
+                  continue
               }
-            }
 
-            if (-not $assetMT5) {
-              $candidateMT5 = $release.assets | Where-Object {
-                $_.name -like "*MetaTrader.5.zip*" -or $_.name -like "*MT5.zip*"
-              } | Select-Object -First 1
+              if (-not $assetMT4) {
 
-              if ($candidateMT5) {
-                $assetMT5 = $candidateMT5
-                $assetMT5Release = $release.tag_name
+                  $candidateMT4 = $release.assets |
+                    Where-Object {
+                        $_.name -like "*OneRoyal.MT4.Terminal.zip*"
+                    } |
+                    Select-Object -First 1
+
+                  if ($candidateMT4) {
+                      $assetMT4 = $candidateMT4
+                      $assetMT4Release = $release.tag_name
+                  }
               }
-            }
 
-            if ($assetMT4 -and $assetMT5) {
-              break
-            }
+              if (-not $assetMT5) {
+
+                  $candidateMT5 = $release.assets |
+                    Where-Object {
+                        $_.name -like "*MetaTrader.5.zip*" -or
+                        $_.name -like "*MT5.zip*"
+                    } |
+                    Select-Object -First 1
+
+                  if ($candidateMT5) {
+                      $assetMT5 = $candidateMT5
+                      $assetMT5Release = $release.tag_name
+                  }
+              }
+
+              if ($assetMT4 -and $assetMT5) {
+                  break
+              }
           }
+
+
+          # ========================================================
+          # MT4
+          # ========================================================
 
           if ($assetMT4) {
-            Write-Host "Downloading MT4: $($assetMT4.name)"
-            Write-Host "Found in release: $assetMT4Release"
-            Invoke-WebRequest -Uri $assetMT4.browser_download_url -OutFile "$env:TEMP\MT4.zip" -Headers $headers
-            Expand-Archive -Path "$env:TEMP\MT4.zip" -DestinationPath "$desktop\MT4_Platform" -Force
-          } else {
-            Write-Host "MT4 asset not found in any release" -ForegroundColor Red
-            exit 1
+
+              Write-Host "Downloading MT4:"
+              Write-Host $assetMT4.name
+
+              Write-Host "Release:"
+              Write-Host $assetMT4Release
+
+              $mt4Zip = "$env:TEMP\MT4.zip"
+              $mt4Destination = "$desktop\MT4_Platform"
+
+              if (Test-Path $mt4Destination) {
+                  Remove-Item `
+                    $mt4Destination `
+                    -Recurse `
+                    -Force
+              }
+
+              Invoke-WebRequest `
+                -Uri $assetMT4.browser_download_url `
+                -OutFile $mt4Zip `
+                -Headers $headers
+
+              Expand-Archive `
+                -Path $mt4Zip `
+                -DestinationPath $mt4Destination `
+                -Force
           }
+          else {
+
+              Write-Host "MT4 not found." `
+                -ForegroundColor Red
+
+              exit 1
+          }
+
+
+          # ========================================================
+          # MT5
+          # ========================================================
 
           if ($assetMT5) {
-            Write-Host "Downloading MT5: $($assetMT5.name)"
-            Write-Host "Found in release: $assetMT5Release"
-            Invoke-WebRequest -Uri $assetMT5.browser_download_url -OutFile "$env:TEMP\MT5.zip" -Headers $headers
-            Expand-Archive -Path "$env:TEMP\MT5.zip" -DestinationPath "$desktop\MT5_Platform" -Force
-          } else {
-            Write-Host "MT5 asset not found in any release" -ForegroundColor Red
-            exit 1
+
+              Write-Host "Downloading MT5:"
+              Write-Host $assetMT5.name
+
+              Write-Host "Release:"
+              Write-Host $assetMT5Release
+
+              $mt5Zip = "$env:TEMP\MT5.zip"
+              $mt5Destination = "$desktop\MT5_Platform"
+
+              if (Test-Path $mt5Destination) {
+                  Remove-Item `
+                    $mt5Destination `
+                    -Recurse `
+                    -Force
+              }
+
+              Invoke-WebRequest `
+                -Uri $assetMT5.browser_download_url `
+                -OutFile $mt5Zip `
+                -Headers $headers
+
+              Expand-Archive `
+                -Path $mt5Zip `
+                -DestinationPath $mt5Destination `
+                -Force
+          }
+          else {
+
+              Write-Host "MT5 not found." `
+                -ForegroundColor Red
+
+              exit 1
           }
 
-      - name: 4. Detect Executables and Create Login Configs
-        shell: pwsh
-        run: |
-          $desktop = [System.Environment]::GetFolderPath("Desktop")
 
+      # ============================================================
+      # 4. DOWNLOAD DIGITAL TIME WHEEL
+      # ============================================================
+
+      - name: 4. Download Digital Time Wheel
+        shell: pwsh
+
+        run: |
+          $desktop = $env:RDP_DESKTOP
+
+          if (-not $desktop) {
+              $desktop = "C:\Users\RDP\Desktop"
+          }
+
+          $projectPath = Join-Path `
+            $desktop `
+            "digital-time-wheel"
+
+          if (Test-Path $projectPath) {
+
+              Write-Host "Removing previous digital-time-wheel..."
+
+              Remove-Item `
+                $projectPath `
+                -Recurse `
+                -Force
+          }
+
+          Write-Host ""
+          Write-Host "Cloning digital-time-wheel..."
+          Write-Host ""
+
+          git clone `
+            https://github.com/tawheebalswfy/digital-time-wheel.git `
+            $projectPath
+
+          if (-not (Test-Path $projectPath)) {
+
+              Write-Host "Clone failed." `
+                -ForegroundColor Red
+
+              exit 1
+          }
+
+          "DIGITAL_TIME_WHEEL=$projectPath" >> $env:GITHUB_ENV
+
+          Write-Host ""
+          Write-Host "Project downloaded:"
+          Write-Host $projectPath
+          Write-Host ""
+
+
+      # ============================================================
+      # 5. INSTALL DIGITAL TIME WHEEL PACKAGES
+      # ============================================================
+
+      - name: 5. Install Digital Time Wheel Packages
+        shell: pwsh
+
+        run: |
+          $projectPath = $env:DIGITAL_TIME_WHEEL
+
+          if (-not $projectPath) {
+              $projectPath = "C:\Users\RDP\Desktop\digital-time-wheel"
+          }
+
+          if (-not (Test-Path $projectPath)) {
+
+              Write-Host "Project directory does not exist." `
+                -ForegroundColor Red
+
+              exit 1
+          }
+
+          Set-Location $projectPath
+
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "Installing Digital Time Wheel dependencies"
+          Write-Host "=========================================="
+          Write-Host ""
+
+          if (Test-Path "$projectPath\pnpm-lock.yaml") {
+
+              Write-Host "Detected pnpm project."
+
+              corepack enable
+
+              corepack prepare pnpm@latest --activate
+
+              pnpm install
+          }
+          elseif (Test-Path "$projectPath\yarn.lock") {
+
+              Write-Host "Detected Yarn project."
+
+              corepack enable
+
+              yarn install
+          }
+          elseif (Test-Path "$projectPath\package.json") {
+
+              Write-Host "Detected npm project."
+
+              npm install
+          }
+          else {
+
+              Write-Host "package.json was not found." `
+                -ForegroundColor Yellow
+          }
+
+
+      # ============================================================
+      # 6. START DIGITAL TIME WHEEL WEB SERVER
+      # ============================================================
+
+      - name: 6. Start Digital Time Wheel
+        shell: pwsh
+
+        run: |
+          $projectPath = $env:DIGITAL_TIME_WHEEL
+
+          if (-not $projectPath) {
+              $projectPath = "C:\Users\RDP\Desktop\digital-time-wheel"
+          }
+
+          Set-Location $projectPath
+
+          $packageJsonPath = Join-Path `
+            $projectPath `
+            "package.json"
+
+          if (-not (Test-Path $packageJsonPath)) {
+
+              Write-Host "package.json not found." `
+                -ForegroundColor Red
+
+              exit 1
+          }
+
+          $packageJson = Get-Content `
+            $packageJsonPath `
+            -Raw |
+            ConvertFrom-Json
+
+          $hasDev = $false
+          $hasStart = $false
+
+          if ($packageJson.scripts) {
+
+              if (
+                  $packageJson.scripts.PSObject.Properties.Name `
+                    -contains "dev"
+              ) {
+                  $hasDev = $true
+              }
+
+              if (
+                  $packageJson.scripts.PSObject.Properties.Name `
+                    -contains "start"
+              ) {
+                  $hasStart = $true
+              }
+          }
+
+          $command = $null
+
+          if (Test-Path "$projectPath\pnpm-lock.yaml") {
+
+              if ($hasDev) {
+                  $command = "pnpm run dev -- --host 0.0.0.0"
+              }
+              elseif ($hasStart) {
+                  $command = "pnpm start"
+              }
+          }
+          elseif (Test-Path "$projectPath\yarn.lock") {
+
+              if ($hasDev) {
+                  $command = "yarn dev --host 0.0.0.0"
+              }
+              elseif ($hasStart) {
+                  $command = "yarn start"
+              }
+          }
+          else {
+
+              if ($hasDev) {
+                  $command = "npm run dev -- --host 0.0.0.0"
+              }
+              elseif ($hasStart) {
+                  $command = "npm start"
+              }
+          }
+
+          if (-not $command) {
+
+              Write-Host "No dev or start script found." `
+                -ForegroundColor Red
+
+              Write-Host ""
+              Write-Host "Available scripts:"
+
+              $packageJson.scripts |
+                Format-List
+
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Starting website with:"
+          Write-Host $command
+          Write-Host ""
+
+          $serverLog = `
+            "C:\Users\RDP\Desktop\digital-time-wheel-server.log"
+
+          $serverCommand = @"
+          Set-Location '$projectPath'
+
+          `$Host.UI.RawUI.WindowTitle = 'Digital Time Wheel Server'
+
+          $command *>> '$serverLog'
+          "@
+
+          $encoded = [Convert]::ToBase64String(
+              [Text.Encoding]::Unicode.GetBytes($serverCommand)
+          )
+
+          Start-Process `
+            powershell.exe `
+            -ArgumentList `
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-EncodedCommand",
+              $encoded `
+            -WindowStyle Hidden
+
+          Start-Sleep -Seconds 15
+
+          Write-Host ""
+          Write-Host "Website server started."
+          Write-Host ""
+
+          Write-Host "Checking ports..."
+
+          Get-NetTCPConnection `
+            -State Listen `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.LocalPort -in @(
+                    3000,
+                    4173,
+                    5000,
+                    5173,
+                    8000,
+                    8080
+                )
+            } |
+            Format-Table `
+              LocalAddress,
+              LocalPort,
+              State
+
+
+      # ============================================================
+      # 7. CREATE CHROME AUTO-OPEN FOR RDP USER
+      # ============================================================
+
+      - name: 7. Configure Chrome Auto Open
+        shell: pwsh
+
+        run: |
+          $rdpProfile = "C:\Users\RDP"
+
+          $startupFolder = Join-Path `
+            $rdpProfile `
+            "AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $startupFolder `
+            -Force `
+            | Out-Null
+
+          $startupFile = Join-Path `
+            $startupFolder `
+            "Open-Digital-Time-Wheel.cmd"
+
+          @'
+          @echo off
+
+          timeout /t 8 /nobreak >nul
+
+          set URL=http://localhost:5173
+
+          powershell -NoProfile -Command ^
+          "$ports = @(5173,3000,4173,5000,8000,8080); ^
+          foreach ($p in $ports) { ^
+          try { ^
+          $r = Invoke-WebRequest -Uri ('http://localhost:' + $p) -UseBasicParsing -TimeoutSec 2; ^
+          if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500) { ^
+          Write-Output $p; ^
+          break ^
+          } ^
+          } catch {} ^
+          }" > "%TEMP%\digital-wheel-port.txt"
+
+          set /p PORT=<"%TEMP%\digital-wheel-port.txt"
+
+          if "%PORT%"=="" set PORT=5173
+
+          set URL=http://localhost:%PORT%
+
+          if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" (
+              start "" "C:\Program Files\Google\Chrome\Application\chrome.exe" "%URL%"
+              exit /b
+          )
+
+          if exist "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" (
+              start "" "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" "%URL%"
+              exit /b
+          )
+
+          start "" "%URL%"
+          '@ |
+            Set-Content `
+              -Path $startupFile `
+              -Encoding ASCII
+
+          Write-Host ""
+          Write-Host "Chrome auto-open configured:"
+          Write-Host $startupFile
+          Write-Host ""
+
+
+      # ============================================================
+      # 8. CONFIGURE MT5 + MT4
+      # ============================================================
+
+      - name: 8. Detect Executables and Create Login Configs
+        shell: pwsh
+
+        run: |
+          $desktop = $env:RDP_DESKTOP
+
+          if (-not $desktop) {
+              $desktop = "C:\Users\RDP\Desktop"
+          }
+
+
+          # ========================================================
           # MT5
-          $mt5Candidates = Get-ChildItem -Path "$desktop\MT5_Platform" -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -in @("terminal64.exe", "terminal.exe", "launcher.exe") }
+          # ========================================================
+
+          $mt5Candidates = Get-ChildItem `
+            -Path "$desktop\MT5_Platform" `
+            -Recurse `
+            -File `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -in @(
+                    "terminal64.exe",
+                    "terminal.exe",
+                    "launcher.exe"
+                )
+            }
+
 
           $mt5Exe = $mt5Candidates |
-            Sort-Object @{ Expression = {
-              switch ($_.Name) {
-                "terminal64.exe" { 0 }
-                "terminal.exe"   { 1 }
-                "launcher.exe"   { 2 }
-                default          { 9 }
-              }
-            }} |
+            Sort-Object @{
+                Expression = {
+
+                    switch ($_.Name) {
+
+                        "terminal64.exe" { 0 }
+
+                        "terminal.exe" { 1 }
+
+                        "launcher.exe" { 2 }
+
+                        default { 9 }
+                    }
+                }
+            } |
             Select-Object -First 1
+
 
           if (-not $mt5Exe) {
-            Write-Host "MT5 executable not found" -ForegroundColor Red
-            exit 1
+
+              Write-Host "MT5 executable not found." `
+                -ForegroundColor Red
+
+              exit 1
           }
+
 
           $mt5Dir = $mt5Exe.DirectoryName
-          $vmIniPath = Join-Path $mt5Dir "vm.ini"
+
+          $vmIniPath = Join-Path `
+            $mt5Dir `
+            "vm.ini"
+
 
           $vmContent = @(
-            "[Common]"
-            "Login=52814428"
-            "Password=XWkO&5Z00tXPr8"
-            "Server=ICMarketsSC-Demo"
-            "KeepPrivate=1"
-            "NewsEnable=0"
+
+              "[Common]"
+
+              "Login=52814428"
+
+              "Password=XWkO&5Z00tXPr8"
+
+              "Server=ICMarketsSC-Demo"
+
+              "KeepPrivate=1"
+
+              "NewsEnable=0"
+
           ) -join "`r`n"
 
-          $vmContent | Out-File -FilePath $vmIniPath -Encoding Unicode -Force
+
+          $vmContent |
+            Out-File `
+              -FilePath $vmIniPath `
+              -Encoding Unicode `
+              -Force
+
 
           "MT5_EXE=$($mt5Exe.FullName)" >> $env:GITHUB_ENV
+
           "MT5_INI=$vmIniPath" >> $env:GITHUB_ENV
 
-          Write-Host "MT5 EXE: $($mt5Exe.FullName)"
-          Write-Host "MT5 INI: $vmIniPath"
 
+          Write-Host ""
+          Write-Host "MT5 EXE:"
+          Write-Host $mt5Exe.FullName
+
+
+          # ========================================================
           # MT4
-          $mt4Exe = Get-ChildItem -Path "$desktop\MT4_Platform" -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -eq "terminal.exe" } |
+          # ========================================================
+
+          $mt4Exe = Get-ChildItem `
+            -Path "$desktop\MT4_Platform" `
+            -Recurse `
+            -File `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -eq "terminal.exe"
+            } |
             Select-Object -First 1
 
+
           if (-not $mt4Exe) {
-            Write-Host "MT4 terminal.exe not found" -ForegroundColor Red
-            exit 1
+
+              Write-Host "MT4 executable not found." `
+                -ForegroundColor Red
+
+              exit 1
           }
 
+
           $mt4Dir = $mt4Exe.DirectoryName
-          $terminalIniPath = Join-Path $mt4Dir "terminal.ini"
+
+          $terminalIniPath = Join-Path `
+            $mt4Dir `
+            "terminal.ini"
+
 
           $mt4Content = @(
-            "Login=31335811"
-            "Password=dcym47"
-            "Server=ICMarketsSC-Demo03"
+
+              "Login=31335811"
+
+              "Password=dcym47"
+
+              "Server=ICMarketsSC-Demo03"
+
           ) -join "`r`n"
 
-          $mt4Content | Out-File -FilePath $terminalIniPath -Encoding ascii -Force
+
+          $mt4Content |
+            Out-File `
+              -FilePath $terminalIniPath `
+              -Encoding ascii `
+              -Force
+
 
           "MT4_EXE=$($mt4Exe.FullName)" >> $env:GITHUB_ENV
+
           "MT4_INI=$terminalIniPath" >> $env:GITHUB_ENV
 
-          Write-Host "MT4 EXE: $($mt4Exe.FullName)"
-          Write-Host "MT4 INI: $terminalIniPath"
 
-      - name: 5. Connect Tailscale
+          Write-Host ""
+          Write-Host "MT4 EXE:"
+          Write-Host $mt4Exe.FullName
+
+
+      # ============================================================
+      # 9. CONNECT TAILSCALE
+      # ============================================================
+
+      - name: 9. Connect Tailscale
         shell: pwsh
+
         env:
           TS_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+
         run: |
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "$env:TEMP\ts.msi"
-          Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\ts.msi", "/quiet", "/norestart" -Wait
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=$env:TS_KEY --hostname=Trader-VM
-          $tsIP = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4 | Select-Object -First 1).Trim()
+          Invoke-WebRequest `
+            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" `
+            -OutFile "$env:TEMP\ts.msi"
+
+
+          Start-Process `
+            msiexec.exe `
+            -ArgumentList `
+              "/i",
+              "$env:TEMP\ts.msi",
+              "/quiet",
+              "/norestart" `
+            -Wait
+
+
+          & "C:\Program Files\Tailscale\tailscale.exe" `
+            up `
+            --authkey=$env:TS_KEY `
+            --hostname=Trader-VM
+
+
+          Start-Sleep -Seconds 5
+
+
+          $tsIP = & `
+            "C:\Program Files\Tailscale\tailscale.exe" `
+            ip `
+            -4 |
+            Select-Object -First 1
+
+
+          if (-not $tsIP) {
+
+              Write-Host "Tailscale failed to obtain an IP." `
+                -ForegroundColor Red
+
+              & "C:\Program Files\Tailscale\tailscale.exe" status
+
+              exit 1
+          }
+
+
+          $tsIP = $tsIP.Trim()
+
+
           "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: 6. Launch Platforms Correctly
+
+          Write-Host ""
+          Write-Host "Tailscale IP:"
+          Write-Host $tsIP
+          Write-Host ""
+
+
+      # ============================================================
+      # 10. LAUNCH MT4 + MT5
+      # ============================================================
+
+      - name: 10. Launch MT4 and MT5
         shell: pwsh
+
         run: |
-          Get-Process -Name "terminal", "terminal64", "launcher", "metatrader" -ErrorAction SilentlyContinue |
-            Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-Process `
+            -Name `
+              "terminal",
+              "terminal64",
+              "launcher",
+              "metatrader" `
+            -ErrorAction SilentlyContinue |
+            Stop-Process `
+              -Force `
+              -ErrorAction SilentlyContinue
+
 
           Start-Sleep -Seconds 3
 
-          # Launch MT5
-          if ($env:MT5_EXE -and (Test-Path $env:MT5_EXE) -and $env:MT5_INI -and (Test-Path $env:MT5_INI)) {
-            Write-Host "Launching MT5..."
-            Write-Host "MT5 EXE: $env:MT5_EXE"
-            Write-Host "MT5 INI: $env:MT5_INI"
 
-            Start-Process `
-              -FilePath $env:MT5_EXE `
-              -ArgumentList "/portable", "/config:$env:MT5_INI" `
-              -WorkingDirectory (Split-Path $env:MT5_EXE -Parent)
-          } else {
-            Write-Host "MT5 exe or ini missing" -ForegroundColor Red
+          # MT5
+          if (
+              $env:MT5_EXE -and
+              (Test-Path $env:MT5_EXE)
+          ) {
+
+              Write-Host "Launching MT5..."
+
+              Start-Process `
+                -FilePath $env:MT5_EXE `
+                -ArgumentList `
+                  "/portable",
+                  "/config:$env:MT5_INI" `
+                -WorkingDirectory `
+                  (Split-Path $env:MT5_EXE -Parent)
           }
+
 
           Start-Sleep -Seconds 8
 
-          # Launch MT4
-          if ($env:MT4_EXE -and (Test-Path $env:MT4_EXE) -and $env:MT4_INI -and (Test-Path $env:MT4_INI)) {
-            Write-Host "Launching MT4..."
-            Write-Host "MT4 EXE: $env:MT4_EXE"
-            Write-Host "MT4 INI: $env:MT4_INI"
 
-            Start-Process `
-              -FilePath $env:MT4_EXE `
-              -ArgumentList "/portable", "`"$env:MT4_INI`"" `
-              -WorkingDirectory (Split-Path $env:MT4_EXE -Parent)
-          } else {
-            Write-Host "MT4 exe or ini missing" -ForegroundColor Red
+          # MT4
+          if (
+              $env:MT4_EXE -and
+              (Test-Path $env:MT4_EXE)
+          ) {
+
+              Write-Host "Launching MT4..."
+
+              Start-Process `
+                -FilePath $env:MT4_EXE `
+                -ArgumentList `
+                  "/portable",
+                  "`"$env:MT4_INI`"" `
+                -WorkingDirectory `
+                  (Split-Path $env:MT4_EXE -Parent)
           }
 
-      - name: 7. Keep Alive
+
+      # ============================================================
+      # 11. KEEP RDP ALIVE
+      # ============================================================
+
+      - name: 11. Keep Alive
         shell: pwsh
+
         run: |
           Write-Host ""
-          Write-Host "=============================="
-          Write-Host "RDP READY"
+          Write-Host "============================================"
+          Write-Host "                 RDP READY"
+          Write-Host "============================================"
+
           Write-Host "Address : $env:TAILSCALE_IP"
+
           Write-Host "User    : $env:RDP_USER"
+
           Write-Host "Pass    : $env:RDP_PASS"
-          Write-Host "MT5 EXE : $env:MT5_EXE"
-          Write-Host "MT5 INI : $env:MT5_INI"
-          Write-Host "MT4 EXE : $env:MT4_EXE"
-          Write-Host "MT4 INI : $env:MT4_INI"
-          Write-Host "=============================="
+
+          Write-Host ""
+
+          Write-Host "Digital Time Wheel:"
+          Write-Host $env:DIGITAL_TIME_WHEEL
+
+          Write-Host ""
+
+          Write-Host "The website should open automatically"
+          Write-Host "after you sign in to the RDP session."
+
+          Write-Host ""
+
+          Write-Host "MT5:"
+          Write-Host $env:MT5_EXE
+
+          Write-Host ""
+
+          Write-Host "MT4:"
+          Write-Host $env:MT4_EXE
+
+          Write-Host "============================================"
+          Write-Host ""
+
 
           $end = (Get-Date).AddMinutes(345)
+
+
           while ((Get-Date) -lt $end) {
-            Start-Sleep -Seconds 60
+
+              Start-Sleep -Seconds 60
           }
